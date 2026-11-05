@@ -1,0 +1,41 @@
+# router-cli: OpenSSH server settings for the router appliance.
+#
+# Applied by setup/harden_sshd.sh, which:
+#   * inserts the GLOBAL section at the TOP of /etc/ssh/sshd_config
+#     (sshd uses the first value it reads for most keywords, so these win), and
+#   * appends the MATCH section at the END (a Match block extends to EOF).
+# Both sections are wrapped in markers so re-running the script replaces them.
+#
+# ---------------------------------------------------------------- GLOBAL ----
+# root: password and public-key login (ROOT_LOGIN=prohibit-password for keys
+# only, ROOT_LOGIN=no for console only).
+PermitRootLogin @ROOT_LOGIN@
+# Password logins (root and router) go through PAM keyboard-interactive on
+# FreeBSD; plain 'password' auth is enabled too for clients that only offer it.
+UsePAM yes
+PasswordAuthentication @PASSWORD_AUTH@
+KbdInteractiveAuthentication @PASSWORD_AUTH@
+PermitEmptyPasswords no
+PermitUserEnvironment no
+MaxAuthTries 4
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2
+# Only these accounts may log in over SSH at all.
+AllowUsers @ALLOW_USERS@
+# ----------------------------------------------------------------- MATCH ----
+# 'router': always dropped straight into the Cisco-style CLI. Any command the
+# client requests (ssh router@r1 'show run') is ignored by sshd and passed to
+# the CLI in SSH_ORIGINAL_COMMAND, where it is parsed as a CLI command - never
+# by a POSIX shell. sftp/scp/port forwarding/agent/X11/tunnels are all denied.
+Match User router
+    ForceCommand /usr/local/bin/router-cli
+    PermitTTY yes
+    AllowTcpForwarding no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTunnel no
+    PermitListen none
+    PermitOpen none
+    GatewayPorts no

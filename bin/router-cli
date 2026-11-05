@@ -1,0 +1,20 @@
+#!/usr/local/bin/python3 -I
+# router-cli launcher. Installed as /usr/local/bin/router-cli and used as the
+# login shell of the 'router' account. -I (isolated mode) ignores PYTHON*
+# environment variables and the user site directory, so a user cannot inject
+# code into the shell through the environment.
+import os
+import sys
+
+_here = os.path.dirname(os.path.realpath(__file__))
+for _cand in ("/usr/local/lib/router-cli", os.path.dirname(_here)):
+    if os.path.isdir(os.path.join(_cand, "routercli")):
+        sys.path.insert(0, _cand)
+        break
+
+from routercli.cli.app import main  # noqa: E402
+
+try:
+    sys.exit(main())
+except KeyboardInterrupt:
+    sys.exit(0)

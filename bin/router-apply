@@ -1,0 +1,16 @@
+#!/usr/local/bin/python3 -I
+# router-apply: privileged backend for router-cli. Installed as
+# /usr/local/libexec/router-apply (root:wheel 0755) and executed only through
+# doas(1) by the 'router' account.
+import os
+import sys
+
+_here = os.path.dirname(os.path.realpath(__file__))
+for _cand in ("/usr/local/lib/router-cli", os.path.dirname(_here)):
+    if os.path.isdir(os.path.join(_cand, "routercli")):
+        sys.path.insert(0, _cand)
+        break
+
+from routercli.backend.helper import main  # noqa: E402
+
+sys.exit(main())

@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# PROVIDE: routercli
+# REQUIRE: LOGIN NETWORKING pf
+# KEYWORD: nojail
+#
+# routercli - boot hook for router-cli.
+#
+# The configuration itself is persisted in /etc/rc.conf, /etc/pf.conf,
+# /usr/local/etc/dnsmasq.conf and frr.conf at every 'commit', so the normal
+# rc(8) boot brings the router up. This hook only enforces 'commit confirmed':
+# if the box rebooted while a confirmed-commit was pending, the previous
+# configuration is restored.
+#
+# rc.conf:  routercli_enable="YES"
+
+. /etc/rc.subr
+
+name=routercli
+rcvar=routercli_enable
+desc="router-cli commit-confirmed boot check"
+
+load_rc_config $name
+: ${routercli_enable:=NO}
+
+start_cmd="${name}_start"
+stop_cmd=":"
+
+routercli_start()
+{
+	/usr/local/libexec/router-apply boot | logger -t router-cli -p daemon.notice
+}
+
+run_rc_command "$1"
