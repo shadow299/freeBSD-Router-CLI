@@ -317,4 +317,9 @@ Rendered files land in `$ROUTERCLI_SANDBOX/etc/...`; commands that would have ru
   is only obfuscation. The `router` account can read it through the CLI (privileged mode).
 * PPPoE was verified against the ppp(8) sources of `stable/15` (its config parser was compiled
   and fed the generated ppp.conf), but not yet against a live ISP.
+* `install.sh` sets netisr to deferred dispatch with one worker thread per CPU core, bound to its
+  core: `net.isr.dispatch=deferred` in `/etc/sysctl.conf`, `net.isr.maxthreads=<cores>` and
+  `net.isr.bindthreads=1` in `/boot/loader.conf` (boot-time tunables, active after a reboot;
+  `NETISR_TUNING=no` skips them). With a GENERIC kernel, traffic from NICs that give no flow
+  hash (Realtek re/rge) still goes to a single netisr thread; multi-queue NICs (Intel) spread.
 * Verify on your FreeBSD release: FRR package name (`pkg search frr`), `vtysh -C` syntax checking.

@@ -10,6 +10,9 @@
 #   NO_FRR=1 sh setup/install.sh   # skip FRR (no OSPF/RIP/BGP support)
 #   PYVER=312 sh setup/install.sh  # python flavour (default: the ports default
 #                                  #  python - 3.11 on older 14.x, 3.12 on 15.x)
+#   NETISR_TUNING=no sh setup/install.sh
+#                                  # do not set the netisr settings (deferred
+#                                  #  dispatch, one bound thread per CPU core)
 #
 # Layout:
 #   /usr/local/lib/router-cli/routercli   python package (root:wheel, read-only)
@@ -239,6 +242,30 @@ sysrc -q routercli_enable=YES >/dev/null
 
 # Kernel modules used by the appliance (also loaded on demand by rc).
 sysrc -q kld_list+="pf pflog if_vlan" >/dev/null 2>&1 || true
+
+# --------------------------------------------------------------------------
+# Packet processing on all CPU cores (netisr):
+#   net.isr.dispatch=deferred  hand packets to netisr worker threads instead of
+#                              processing them in the NIC interrupt context
+#   net.isr.maxthreads=<ncpu>  one worker thread per CPU core
+#   net.isr.bindthreads=1      pin each worker to its core (cache locality)
+# maxthreads/bindthreads are boot-time tunables (read-only once the system runs),
+# so they go into /boot/loader.conf; dispatch is a normal sysctl -> /etc/sysctl.conf.
+NETISR_TUNING=${NETISR_TUNING:-yes}
+SYSCTL_CONF=/etc/sysctl.conf
+touch "$SYSCTL_CONF"
+sed -i '' '/^net\.isr\.dispatch=/d' "$SYSCTL_CONF"
+if [ "$NETISR_TUNING" = yes ]; then
+    ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
+    msg "netisr: deferred dispatch, $ncpu worker threads bound to the CPU cores"
+    sysrc -f $LOADER net.isr.maxthreads="$ncpu" net.isr.bindthreads=1 >/dev/null
+    echo "net.isr.dispatch=deferred" >> "$SYSCTL_CONF"
+    sysctl net.isr.dispatch=deferred >/dev/null 2>&1 || true
+    echo "    $LOADER: net.isr.maxthreads=$ncpu net.isr.bindthreads=1 (active after reboot)"
+    echo "    $SYSCTL_CONF: net.isr.dispatch=deferred"
+else
+    sysrc -f $LOADER -x net.isr.maxthreads net.isr.bindthreads >/dev/null 2>&1 || true
+fi
 
 # --------------------------------------------------------------------------
 grep -qxF /usr/local/bin/router-cli /etc/shells || echo /usr/local/bin/router-cli >> /etc/shells

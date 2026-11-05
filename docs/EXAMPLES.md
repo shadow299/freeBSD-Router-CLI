@@ -1619,6 +1619,7 @@ The CLI asks for confirmation for `rollback`, `copy ...`, `write erase` and `rel
 | Time sync | `show clock`, `show ntp associations` |
 | System messages | `show logging` |
 | Who is logged in | `show users` |
+| Is PPPoE connected? | `show pppoe session`, `show pppoe log` |
 | Can I reach it? | `ping 8.8.8.8`, `ping example.com repeat 10 size 1400`, `traceroute 8.8.8.8` |
 
 **Step-by-step when "the internet does not work":**

@@ -13,7 +13,7 @@ file to other people, and every installation works the same way.
 | Part | What it is |
 |---|---|
 | FreeBSD 15 (branch `stable/15`) | The operating system, built from source, with unneeded parts removed (no compilers, games, docs, tests or 32-bit libraries; see [`image/src.conf`](../image/src.conf)) |
-| `pf`, VLANs, DHCP client, SSH | Already part of FreeBSD |
+| `pf`, VLANs, DHCP client, PPPoE, SSH | Already part of FreeBSD |
 | python, prompt_toolkit, dnsmasq, doas, FRR | The only extra packages. They are stored **on the stick**, so installing needs **no internet** |
 | router-cli | This project: the Cisco-style CLI |
 
@@ -556,7 +556,10 @@ The script stops with `ERROR:` and shows the last 40 lines of the log. The full 
 
 1. `setup/install.sh` with `PKG_REPO_DIR=...`: bootstraps pkg from the stick, installs the
    packages from the offline repository, installs router-cli, and turns on the `rge` driver
-   (`if_rge_load="YES"` in `/boot/loader.conf`) when a Realtek 2.5G card is present
+   (`if_rge_load="YES"` in `/boot/loader.conf`) when a Realtek 2.5G card is present. It also
+   sets up netisr packet processing on all cores: `net.isr.dispatch=deferred` in
+   `/etc/sysctl.conf`, `net.isr.maxthreads=<number of cores>` and `net.isr.bindthreads=1` in
+   `/boot/loader.conf` (these two are boot-time tunables; `NETISR_TUNING=no` skips all three)
 2. `setup/setup_accounts.sh`: the `router` account (login shell = the CLI) and the enable secret
 3. `setup/harden_sshd.sh` (with `SSHD_RESTART=no`): router → CLI only; root → password or key
 4. optional quick setup: [`image/installer/quick_setup.py`](../image/installer/quick_setup.py)
