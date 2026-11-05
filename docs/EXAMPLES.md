@@ -16,21 +16,22 @@ result.
 5. [Basic system settings](#5-basic-system-settings)
 6. [Interfaces and IP addresses](#6-interfaces-and-ip-addresses)
 7. [Recipe: a complete home router](#7-recipe-a-complete-home-router)
-8. [DHCP server](#8-dhcp-server)
-9. [DNS](#9-dns)
-10. [VLANs](#10-vlans)
-11. [NAT and port forwarding](#11-nat-and-port-forwarding)
-12. [Firewall with access lists (ACLs)](#12-firewall-with-access-lists-acls)
-13. [Static routing](#13-static-routing)
-14. [Dynamic routing: OSPF](#14-dynamic-routing-ospf)
-15. [Dynamic routing: RIP](#15-dynamic-routing-rip)
-16. [Dynamic routing: BGP](#16-dynamic-routing-bgp)
-17. [IPv6](#17-ipv6)
-18. [Saving, history and rollback](#18-saving-history-and-rollback)
-19. [Monitoring and troubleshooting](#19-monitoring-and-troubleshooting)
-20. [Recipe: small office with VLANs](#20-recipe-small-office-with-vlans)
-21. [Common mistakes and what the errors mean](#21-common-mistakes-and-what-the-errors-mean)
-22. [Cheat sheet](#22-cheat-sheet)
+8. [Internet over PPPoE (ISP user name and password)](#8-internet-over-pppoe-isp-user-name-and-password)
+9. [DHCP server](#9-dhcp-server)
+10. [DNS](#10-dns)
+11. [VLANs](#11-vlans)
+12. [NAT and port forwarding](#12-nat-and-port-forwarding)
+13. [Firewall with access lists (ACLs)](#13-firewall-with-access-lists-acls)
+14. [Static routing](#14-static-routing)
+15. [Dynamic routing: OSPF](#15-dynamic-routing-ospf)
+16. [Dynamic routing: RIP](#16-dynamic-routing-rip)
+17. [Dynamic routing: BGP](#17-dynamic-routing-bgp)
+18. [IPv6](#18-ipv6)
+19. [Saving, history and rollback](#19-saving-history-and-rollback)
+20. [Monitoring and troubleshooting](#20-monitoring-and-troubleshooting)
+21. [Recipe: small office with VLANs](#21-recipe-small-office-with-vlans)
+22. [Common mistakes and what the errors mean](#22-common-mistakes-and-what-the-errors-mean)
+23. [Cheat sheet](#23-cheat-sheet)
 
 ---
 
@@ -318,7 +319,7 @@ configure terminal
 interface re1
  ip address 203.0.113.2 255.255.255.252
  exit
-! the gateway goes into a default route (see section 13)
+! the gateway goes into a default route (see section 14)
 ip route 0.0.0.0 0.0.0.0 203.0.113.1
 commit
 end
@@ -476,7 +477,248 @@ DNS `192.168.1.1`.
 
 ---
 
-## 8. DHCP server
+## 8. Internet over PPPoE (ISP user name and password)
+
+Many DSL and fibre ISPs do not hand out an address by DHCP. Instead they give you a
+**user name and password** and the router has to "log in" with **PPPoE** (PPP over Ethernet).
+If your ISP's letter mentions *PPPoE*, a *PPP user name* or a *VLAN ID*, this section is for
+you. (If the ISP's own modem does the login, put that modem in **bridge mode** first, so this
+router can do it.)
+
+In Cisco style, PPPoE has two parts:
+
+| Part | What it is |
+|---|---|
+| The **Ethernet port** (`re1`) | Only carries the PPPoE connection: `pppoe-client dial-pool-number 1` |
+| **`interface dialer1`** | The internet connection itself: it logs in (`ppp chap ...`), receives the public address (`ip address negotiated`) and is the NAT `outside` |
+
+```text
+   Internet
+      |
+   [ISP modem/ONT in bridge mode]
+      |  PPPoE login: user name + password
+     re1  pppoe-client dial-pool-number 1     (no IP address)
+      :
+   dialer1  ip address negotiated, ip nat outside   <- public address appears here
+  [ this router ]
+     re0  LAN 192.168.1.1/24, ip nat inside
+      |
+   [switch / Wi-Fi AP] -- PCs, phones, TV
+```
+
+On FreeBSD this runs the built-in `ppp` program (no extra software). It keeps the line up:
+if the connection drops it redials every 10 seconds, and it notices a dead line within about
+a minute.
+
+### 8.1 Complete home router over PPPoE
+
+Replace `jane@isp.example` and `MyIspPassword` with your own:
+
+```cli
+configure terminal
+hostname home-router
+!
+! ---- WAN port: only carries PPPoE ----
+interface re1
+ description WAN to ISP (PPPoE)
+ pppoe enable group global
+ pppoe-client dial-pool-number 1
+ no shutdown
+ exit
+!
+! ---- the internet connection ----
+interface dialer1
+ description Internet (PPPoE)
+ ip address negotiated
+ ip nat outside
+ encapsulation ppp
+ dialer pool 1
+ ppp chap hostname jane@isp.example
+ ppp chap password MyIspPassword
+ ppp ipcp dns request
+ exit
+ip route 0.0.0.0 0.0.0.0 dialer1
+!
+! ---- LAN ----
+interface re0
+ description Home LAN
+ ip address 192.168.1.1 255.255.255.0
+ ip nat inside
+ exit
+!
+! ---- NAT: share the PPPoE address ----
+access-list 1 permit 192.168.1.0 0.0.0.255
+ip nat inside source list 1 interface dialer1 overload
+!
+! ---- DHCP + DNS for the LAN ----
+ip dhcp excluded-address 192.168.1.1 192.168.1.49
+ip dhcp pool HOME
+ network 192.168.1.0 255.255.255.0
+ default-router 192.168.1.1
+ dns-server 192.168.1.1
+ exit
+ip dns server
+!
+commit comment internet over PPPoE
+end
+write memory
+```
+
+What the PPPoE lines do:
+
+| Line | Meaning |
+|---|---|
+| `pppoe enable group global` | Use this Ethernet port for PPPoE (written for Cisco compatibility) |
+| `pppoe-client dial-pool-number 1` | This port belongs to "dial pool 1" |
+| `interface dialer1` | The PPPoE connection. On FreeBSD the interface is really called `dialer1` |
+| `dialer pool 1` | Use the port(s) of dial pool 1 |
+| `ip address negotiated` | Take the address the ISP assigns (also for "static IP" contracts) |
+| `ppp chap hostname` / `ppp chap password` | Your ISP login. It works for both PAP and CHAP; the router uses whichever the ISP asks for |
+| `ppp ipcp dns request` | Use the ISP's DNS servers (the router's DNS server forwards to them) |
+| `ip route 0.0.0.0 0.0.0.0 dialer1` | Send all internet traffic through the PPPoE connection |
+| `ip nat ... interface dialer1 overload` | NAT to the PPPoE address, **not** to `re1` |
+
+Check the connection (it takes a few seconds after `commit`):
+
+```cli
+show pppoe session
+show ip interface brief
+```
+
+```text
+router# show pppoe session
+Interface  PPPoE port      ppp       Session  Address          Peer             MTU
+dialer1    re1             running   UP       203.0.113.45     198.51.100.1     1492
+
+router# ping 1.1.1.1
+router# ping example.com
+```
+
+`Session DOWN` with `ppp running` means it is still trying: see [8.6](#86-when-the-connection-does-not-come-up).
+
+### 8.2 Typing the password without showing it
+
+`ppp chap password` with nothing after it asks for the password, so it is not shown on screen
+and not saved in the command history:
+
+```text
+router(config)# interface dialer1
+router(config-if)# ppp chap password
+PPP password:
+Confirm PPP password:
+router(config-if)# commit
+```
+
+`show running-config` shows the password as `ppp chap password 7 0822455D0A16...`. This "type 7"
+form is the Cisco format; it only hides the password from someone looking over your shoulder,
+it is **not** encryption. You can paste such a line back (or from a Cisco router), and it
+works. The password may contain any printable character, but it must not start with `!` or a
+space (a FreeBSD `ppp` limitation).
+
+### 8.3 ISP needs a VLAN (e.g. VLAN 35, VLAN 7)
+
+Some fibre ISPs require PPPoE on a VLAN. Put the PPPoE on a VLAN subinterface instead of the
+port (see [VLANs](#11-vlans)):
+
+```cli
+configure terminal
+interface re1
+ no pppoe enable
+ exit
+interface re1.35
+ description ISP VLAN 35
+ pppoe enable group global
+ pppoe-client dial-pool-number 1
+ exit
+commit comment PPPoE on VLAN 35
+end
+```
+
+If the ISP also gave you a **service name**, add it:
+`pppoe-client dial-pool-number 1 service-name NAME` (most ISPs do not need one).
+
+### 8.4 Port forwarding, MTU and your own DNS
+
+Port forwards use `interface dialer1`, because that is where the public address is:
+
+```cli
+configure terminal
+ip nat inside source static tcp 192.168.1.10 443 interface dialer1 443
+!
+! use other DNS servers instead of the ISP's
+ip name-server 1.1.1.1 9.9.9.9
+interface dialer1
+ no ppp ipcp dns request
+ exit
+commit comment port forward + own DNS
+end
+```
+
+* **MTU**: PPPoE packets are 8 bytes smaller, so the dialer uses MTU **1492** automatically and
+  adjusts TCP connections to fit (no `ip tcp adjust-mss` needed). Only if the ISP tells you a
+  smaller value: `interface dialer1` → `mtu 1480`.
+* **Static IP from the ISP**: keep `ip address negotiated`; the ISP sends your fixed address
+  during the login.
+
+### 8.5 Reconnect, pause, remove
+
+```cli
+clear interface dialer1
+```
+
+`clear interface dialer1` (or `clear pppoe all`) hangs up and dials again. To stop PPPoE for a
+while, `shutdown` the dialer; `no shutdown` starts it again:
+
+```cli
+configure terminal
+interface dialer1
+ shutdown
+ exit
+commit comment PPPoE paused
+interface dialer1
+ no shutdown
+ exit
+commit comment PPPoE back on
+end
+```
+
+To go back to a DHCP internet connection, remove the PPPoE parts and use [section 7](#7-recipe-a-complete-home-router):
+
+```cli
+configure terminal
+no ip nat inside source static tcp 192.168.1.10 443 interface dialer1 443
+no ip nat inside source list 1 interface dialer1 overload
+no ip route 0.0.0.0 0.0.0.0 dialer1
+no interface dialer1
+interface re1.35
+ no pppoe enable
+ exit
+interface re1
+ ip address dhcp
+ ip nat outside
+ exit
+ip nat inside source list 1 interface re1 overload
+commit comment back to DHCP
+end
+```
+
+### 8.6 When the connection does not come up
+
+`show pppoe log` shows what `ppp` did (the file `/var/log/ppp.log`):
+
+| You see in `show pppoe log` | Meaning and fix |
+|---|---|
+| nothing new, `show pppoe session` says `ppp stopped` | Did you `commit`? Is the dialer `shutdown`? Try `clear interface dialer1` |
+| `Received NGM_PPPOE_FAIL`, then `Enter pause (10) for redialing`, again and again | No PPPoE answer from the ISP: wrong port, cable, missing/wrong VLAN (8.3), or the ISP modem is not in bridge mode |
+| `Received NGM_PPPOE_SUCCESS`, then `Chap Input: FAILURE` or `Pap Input: FAILURE` | The ISP answered but refused the login: check `ppp chap hostname` / `ppp chap password` (some ISPs need `user@isp-domain`) |
+| `bundle: Network` and `myaddr ... hisaddr = ...` | Connected. If web pages still fail, check DNS: `show hosts`, `ping 1.1.1.1` vs `ping example.com` |
+
+After unplugging the modem, many ISPs block a new login for a minute or two; the router keeps
+retrying on its own.
+
+---
+
+## 9. DHCP server
 
 A **pool** is one network that gets DHCP. You need a pool for every LAN / VLAN.
 
@@ -569,7 +811,7 @@ router# show ip dhcp binding        <- which device has which address right now
 
 ---
 
-## 9. DNS
+## 10. DNS
 
 By default the router is a DNS *forwarder* (`ip dns server`): clients ask the router, the
 router asks the upstream servers and caches the answers.
@@ -613,7 +855,7 @@ pool (`dns-server 1.1.1.1`).
 
 ---
 
-## 10. VLANs
+## 11. VLANs
 
 A VLAN lets one cable carry several separate networks. The switch adds a *tag* (a number
 1-4094) to every packet so the router knows which network it belongs to.
@@ -733,7 +975,7 @@ accepted (Cisco habit) but not needed.
 
 ---
 
-## 11. NAT and port forwarding
+## 12. NAT and port forwarding
 
 **NAT overload (PAT)**: all inside devices share the WAN address. This is what you want 99% of
 the time. You need: inside interfaces (`ip nat inside`), the outside interface
@@ -770,7 +1012,7 @@ end
 
 Format: `ip nat inside source static tcp|udp <inside-ip> <inside-port> interface <wan> <outside-port>`.
 The firewall opening for the forwarded port is created automatically. Give the server a fixed
-address (static-bind, section 8) so the forward does not break.
+address (static-bind, section 9) so the forward does not break.
 
 Some well-known port names also work instead of numbers: `www` (80), `https` (443), `ssh` (22),
 `domain` (53), `smtp` (25), ... Press `?` at the port position to see them.
@@ -838,7 +1080,7 @@ router# clear ip nat translation *  <- drop all sessions (they re-establish)
 
 ---
 
-## 12. Firewall with access lists (ACLs)
+## 13. Firewall with access lists (ACLs)
 
 **What is already protected without any ACL?** Every `ip nat outside` interface blocks traffic
 that was not started from inside (port forwards and static NAT excepted). Ping and
@@ -1016,7 +1258,7 @@ router# clear counters        <- reset the counters
 
 ---
 
-## 13. Static routing
+## 14. Static routing
 
 The router automatically knows the networks on its own interfaces. For anything else it
 needs a **route**: "to reach network X, send packets to next-hop Y".
@@ -1088,7 +1330,7 @@ Routes are made permanent in `/etc/rc.conf` (`static_routes`), so they survive a
 
 ---
 
-## 14. Dynamic routing: OSPF
+## 15. Dynamic routing: OSPF
 
 With several routers, typing static routes everywhere gets painful. With **OSPF** routers
 tell each other which networks they have. All routers in one area learn all routes, and if
@@ -1187,7 +1429,7 @@ put everything in area 0.
 
 ---
 
-## 15. Dynamic routing: RIP
+## 16. Dynamic routing: RIP
 
 RIP is the simplest routing protocol (good for labs and very small networks; it allows at most
 15 hops). Same lab as OSPF, R1 side:
@@ -1233,7 +1475,7 @@ Remove: `no router rip`.
 
 ---
 
-## 16. Dynamic routing: BGP
+## 17. Dynamic routing: BGP
 
 BGP is the routing protocol of the internet. You need it when you connect to two ISPs with
 your own address space, or to a partner/data-centre network. Each side has an **AS number**
@@ -1284,7 +1526,7 @@ Remove a neighbour completely: `no neighbor 10.0.12.2`. Remove BGP: `no router b
 
 ---
 
-## 17. IPv6
+## 18. IPv6
 
 ```cli
 configure terminal
@@ -1313,7 +1555,7 @@ is always allowed.
 
 ---
 
-## 18. Saving, history and rollback
+## 19. Saving, history and rollback
 
 There are three kinds of configuration:
 
@@ -1361,7 +1603,7 @@ The CLI asks for confirmation for `rollback`, `copy ...`, `write erase` and `rel
 
 ---
 
-## 19. Monitoring and troubleshooting
+## 20. Monitoring and troubleshooting
 
 | Question | Command |
 |---|---|
@@ -1403,7 +1645,7 @@ router# ping 8.8.8.8 source 192.168.1.1
 
 ---
 
-## 20. Recipe: small office with VLANs
+## 21. Recipe: small office with VLANs
 
 A complete, realistic configuration you can adapt:
 
@@ -1558,7 +1800,7 @@ ports VLAN 30.
 
 ---
 
-## 21. Common mistakes and what the errors mean
+## 22. Common mistakes and what the errors mean
 
 **`% Invalid input detected at '^' marker.`**: a typo or a value that is not allowed. The `^`
 shows where. Here the mask is not a valid mask:
@@ -1628,6 +1870,35 @@ ip dhcp pool LOST
 commit
 ```
 
+**An incomplete PPPoE dialer**: `commit` lists what is missing (here the password, the
+`dialer pool` and a port with `pppoe-client`):
+
+```cli-error
+configure terminal
+interface dialer1
+ ip address negotiated
+ ppp chap hostname jane@isp.example
+ exit
+commit
+```
+
+**An IP address on the dialer**: the ISP assigns it, use `ip address negotiated`:
+
+```cli-error
+configure terminal
+interface dialer1
+ ip address 203.0.113.45 255.255.255.255
+```
+
+**NAT or default route on the PPPoE port instead of the dialer**: the public address is on
+`dialer1`, not on `re1`, so use `interface dialer1` in NAT rules and `ip route 0.0.0.0 0.0.0.0
+dialer1`. A default route out of an Ethernet port needs a gateway address:
+
+```cli-error
+configure terminal
+ip route 0.0.0.0 0.0.0.0 re1
+```
+
 **Other typical problems**
 
 | Symptom | Cause / fix |
@@ -1638,10 +1909,12 @@ commit
 | Changes gone after reboot | You never committed: `commit` writes the system files. `write memory` additionally saves the startup copy |
 | `% Warning: ... does not exist on this system` | Interface name typo (`show ip interface brief`), or the Realtek driver is not loaded (see README) |
 | 2.5G port drops under load | `interface re1` → `no hardware-offload` → `commit` |
+| PPPoE: `show pppoe session` stays `DOWN` | `show pppoe log`, see [8.6](#86-when-the-connection-does-not-come-up) |
+| PPPoE: internet works, but some websites hang | An MTU problem: ask the ISP for the correct MTU and set it with `interface dialer1` → `mtu 1480` (example value) |
 
 ---
 
-## 22. Cheat sheet
+## 23. Cheat sheet
 
 ```text
 enable                                   go to router#
@@ -1673,6 +1946,19 @@ interface re0
  shutdown | no shutdown
 
 interface re0.10                         VLAN 10 on re0
+
+interface re1                            PPPoE (ISP user name + password)
+ pppoe enable group global
+ pppoe-client dial-pool-number 1
+interface dialer1
+ ip address negotiated
+ ip nat outside
+ dialer pool 1
+ ppp chap hostname USER
+ ppp chap password PASSWORD              (alone: asks without showing it)
+ ppp ipcp dns request
+ip route 0.0.0.0 0.0.0.0 dialer1
+show pppoe session | show pppoe log | clear interface dialer1
 
 ip route 0.0.0.0 0.0.0.0 GATEWAY         default route
 ip route NET MASK NEXTHOP                static route

@@ -354,7 +354,7 @@ Confirm enable secret:
 
 ==> Quick network setup
   This makes the box a working home/office router right away:
-    WAN port  -> internet (address from your ISP by DHCP), firewall + NAT
+    WAN port  -> internet (DHCP, or PPPoE with your ISP login), firewall + NAT
     LAN port  -> 192.168.1.1, gives addresses to your PCs (DHCP) and DNS
 Do the quick setup now? (yes/no) [yes]:
 
@@ -364,10 +364,23 @@ Network ports found in this machine:
 WAN port (to the internet / ISP modem) [rge0]:
 LAN port (to your switch / PCs) [re0]:
 Router address on the LAN (network is /24 = 255.255.255.0) [192.168.1.1]:
+
+  How does rge0 connect to the internet?
+    dhcp  - the ISP's modem/ONT hands out an address automatically (cable, most fibre/LTE boxes)
+    pppoe - your ISP gave you a PPPoE user name and password (DSL, many fibre ISPs)
+Connection type (dhcp/pppoe) [dhcp]: pppoe
+PPPoE user name (from your ISP) []: jane@isp.example
+PPPoE password (not shown):
+Retype the PPPoE password:
+ISP VLAN ID (only if your ISP gave you one, e.g. 35; empty = none) []:
 ```
 
-Press **Enter** to accept a suggestion shown in `[...]`. Which port is which?
-`cable active` means a cable is plugged in, so plug in only the LAN cable to find the LAN
+Press **Enter** to accept a suggestion shown in `[...]`. The PPPoE questions only appear if you
+answer `pppoe`. Your ISP's letter says whether you need PPPoE (a user name and password for the
+internet) and a VLAN ID. If the ISP's modem does the login itself, choose `dhcp` (or put the
+modem in bridge mode and choose `pppoe`).
+
+Which port is which? `cable active` means a cable is plugged in, so plug in only the LAN cable to find the LAN
 port. With the two Realtek cards: `rge0` is the **2.5 Gbit** port (good as WAN for fast
 internet) and `re0` is the **1 Gbit** port.
 
@@ -412,10 +425,13 @@ On Windows use PowerShell (it has `ssh`) or PuTTY.
 **Check the internet:** connect the WAN port to your ISP modem, then in the CLI:
 
 ```text
-router1# show ip interface brief     <- rge0 should have an address from the ISP
+router1# show ip interface brief     <- rge0 (DHCP) or dialer1 (PPPoE) has an address from the ISP
+router1# show pppoe session          <- PPPoE only: Session should say UP
 router1# ping 1.1.1.1
 router1# ping freebsd.org
 ```
+
+If PPPoE stays `DOWN`, see [EXAMPLES.md section 8.6](EXAMPLES.md#86-when-the-connection-does-not-come-up).
 
 **Next:** [EXAMPLES.md](EXAMPLES.md) shows everything step by step: VLANs, DHCP, NAT and port
 forwarding, firewall, routing.
@@ -543,10 +559,12 @@ The script stops with `ERROR:` and shows the last 40 lines of the log. The full 
    (`if_rge_load="YES"` in `/boot/loader.conf`) when a Realtek 2.5G card is present
 2. `setup/setup_accounts.sh`: the `router` account (login shell = the CLI) and the enable secret
 3. `setup/harden_sshd.sh` (with `SSHD_RESTART=no`): router → CLI only; root → password or key
-4. optional quick setup: [`image/installer/quick-setup.cli`](../image/installer/quick-setup.cli)
-   is checked by the real CLI in a sandbox. It is then installed with
-   `router-apply init` (`write_files`), which writes `rc.conf`, `pf.conf` and `dnsmasq.conf`,
-   so the first boot already routes.
+4. optional quick setup: [`image/installer/quick_setup.py`](../image/installer/quick_setup.py)
+   builds the CLI script from [`quick-setup.cli`](../image/installer/quick-setup.cli) and the DHCP
+   or PPPoE WAN part (the PPPoE password goes in as a type 7 string, never through the
+   shell). The real CLI checks it in a sandbox. It is then installed with
+   `router-apply init` (`write_files`), which writes `rc.conf`, `pf.conf`, `dnsmasq.conf` (and
+   `/etc/ppp/ppp.conf` for PPPoE), so the first boot already routes.
 
 Doing the same by hand (for experts):
 
@@ -569,7 +587,7 @@ All of these are files in the project; edit them, then run `build-image.sh` agai
 | What | Where |
 |---|---|
 | Remove/keep FreeBSD components | [`image/src.conf`](../image/src.conf) (`man src.conf`). Keep the components listed under "KEEP". `WITHOUT_X=anything` removes X, so delete a line to keep the component. Changing it triggers a full rebuild. |
-| What the quick setup configures | [`image/installer/quick-setup.cli`](../image/installer/quick-setup.cli): normal router-cli commands, e.g. add `ip dhcp pool` options or a `banner motd` |
+| What the quick setup configures | [`image/installer/quick-setup.cli`](../image/installer/quick-setup.cli) plus the WAN part [`quick-setup-wan-dhcp.cli`](../image/installer/quick-setup-wan-dhcp.cli) / [`quick-setup-wan-pppoe.cli`](../image/installer/quick-setup-wan-pppoe.cli): normal router-cli commands, e.g. add `ip dhcp pool` options or a `banner motd` |
 | Questions during installation | [`image/installer/postinstall.sh`](../image/installer/postinstall.sh) |
 | Own kernel configuration | Put a file in `/usr/src/sys/amd64/conf/ROUTER` (start with `include GENERIC` and `ident ROUTER`), then `sh image/build-image.sh -k ROUTER`. Not needed for the Realtek cards. Note that `-u` is needed if the file is not committed to git, or it is lost on update; better keep it outside `/usr/src` and copy it in. |
 | Newer packages (e.g. latest FRR) | Packages come from the build machine's pkg configuration ("quarterly" by default). For "latest": `mkdir -p /usr/local/etc/pkg/repos && echo 'FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' > /usr/local/etc/pkg/repos/FreeBSD.conf` on the build machine. |

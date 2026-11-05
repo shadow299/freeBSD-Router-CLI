@@ -1,7 +1,8 @@
 # freebsd-router-cli
 
 A Cisco IOS-style management shell for a headless **FreeBSD 15.x** (also 14.x) router appliance built on
-native **pf**, **if_vlan**, **dnsmasq** and (optionally) **FRR** for dynamic routing.
+native **pf**, **if_vlan**, **dnsmasq**, base **ppp(8)** for PPPoE and (optionally) **FRR** for
+dynamic routing.
 
 ```
 edge1>enable
@@ -30,7 +31,7 @@ edge1#write memory
 | [routercli/backend/](routercli/backend/) | Translation engine: renderers for rc.conf / pf.conf / dnsmasq.conf / frr.conf / ntp.conf / resolv.conf, [apply.py](routercli/backend/apply.py) transactional commit, [helper.py](routercli/backend/helper.py) root entry point |
 | [bin/](bin/) | `router-cli` (login shell) and `router-apply` (privileged backend) launchers |
 | [setup/](setup/) | [install.sh](setup/install.sh), [setup_accounts.sh](setup/setup_accounts.sh), [harden_sshd.sh](setup/harden_sshd.sh) + [sshd_config.router-cli](setup/sshd_config.router-cli), [doas.conf](setup/doas.conf), [rc.d/routercli](setup/rc.d/routercli) |
-| [docs/EXAMPLES.md](docs/EXAMPLES.md) | **Beginner guide with tested examples for every topic** (modes, interfaces, DHCP, DNS, VLANs, NAT, ACLs, routing, rollback, troubleshooting, full recipes) |
+| [docs/EXAMPLES.md](docs/EXAMPLES.md) | **Beginner guide with tested examples for every topic** (modes, interfaces, PPPoE, DHCP, DNS, VLANs, NAT, ACLs, routing, rollback, troubleshooting, full recipes) |
 | [image/](image/) | Installer image builder: [build-image.sh](image/build-image.sh) (minimal FreeBSD `stable/15` + router-cli + offline packages → `.img`/`.iso` for amd64/arm64), [src.conf](image/src.conf), [installer/](image/installer/) (bsdinstall hook, post-install, quick setup) |
 | [docs/BUILDING_FREEBSD.md](docs/BUILDING_FREEBSD.md) | **Beginner step-by-step guide**: build the installer image, write the USB stick, install the router |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | Full command reference (generated from the grammar) |
@@ -191,6 +192,7 @@ repository:
 | pf: the generated `nat`/`rdr`/`binat`, `scrub`, tables, `round-robin sticky-address` | supported (pf in 15 accepts both classic and `nat-to` syntax) |
 | rc.conf: `vlans_<if>`, `ifconfig_<if>_<vid>`, `static_routes`, `gateway_enable`, `pf_enable`, `pflog_enable` | unchanged |
 | `dhclient` (DHCP client on WAN), `ntpd`, `etcupdate` | still in base |
+| PPPoE: `ppp(8)` + `ng_pppoe(4)`, `rc.d/ppp` (`ppp_profile`, `ppp_<profile>_unit`), `iface name`, `/var/log/ppp.log` | in base (checked against the `stable/15` sources) |
 | Packages: `python312` + `py312-prompt-toolkit`, `dnsmasq`, `doas`, `frr10`, `realtek-re-kmod` | available; `install.sh` detects the Python flavour |
 | RTL8168H | built-in `re(4)` or vendor driver |
 | RTL8125B | native `rge(4)` = `rge0` on stable/15 / 15.2+ (default there), vendor `realtek-re-kmod` on 15.0/15.1 (`re1`) |
@@ -242,6 +244,9 @@ repository:
 | `interface em0` / `ip address A M [secondary]` | `ifconfig_em0="inet A/len"`, `ifconfig_em0_aliasN` |
 | `interface em0.10` + `encapsulation dot1Q 10` | `vlans_em0="10"`, `ifconfig_em0_10=...`; live `ifconfig em0.10 create vlan 10 vlandev em0` |
 | `ip address dhcp` | `ifconfig_em0="DHCP"`, `dhclient` |
+| `interface re1` + `pppoe-client dial-pool-number 1 [service-name S]` | `ifconfig_re1="up"`; ppp.conf `set device PPPoE:re1[:S]` (VLANs: `PPPoE:re1_35`) |
+| `interface dialer1` + `ip address negotiated`, `dialer pool 1`, `ppp chap hostname/password` (or `ppp pap sent-username ... password`), `ppp ipcp dns request`, `mtu` | `/etc/ppp/ppp.conf` (0600) profile `dialer1`: `set authname/authkey`, `set mtu/mru max 1492`, `enable dns`, `iface name dialer1`; rc.conf `ppp_enable`, `ppp_profile="dialer1"`, `ppp_mode="ddial"`, `ppp_dialer1_unit="1"`; live `service ppp start dialer1` (only when that profile changed) |
+| `ip route P M dialer1` (incl. default) | `add! P HISADDR` in the ppp profile (re-added at every reconnect), not rc.conf |
 | `ipv6 address`, `mtu`, `description`, `shutdown` | `ifconfig_X_ipv6`, `mtu N`, `ifconfig_X_descr`, `down` |
 | `no hardware-offload` | `-rxcsum -txcsum -rxcsum6 -txcsum6 -tso -lro` on the interface |
 | `interface lo1` | `cloned_interfaces` |
@@ -260,11 +265,13 @@ repository:
 
 Only a managed block at the end of `/etc/rc.conf` (between `# >>> router-cli managed block`
 markers) is written; everything else in rc.conf is preserved, and the block overrides earlier
-assignments. pf.conf, dnsmasq.conf and frr.conf are fully owned by router-cli.
+assignments. pf.conf, dnsmasq.conf, frr.conf and (once a dialer is configured) ppp.conf are fully
+owned by router-cli.
 
 Failure handling: every generated file is validated before installation (`pfctl -nf`,
-`dnsmasq --test`, `vtysh -C`, `sh -n`). Live changes are applied as a diff (only the affected
-interfaces/routes/services are touched; links do not flap). If any step fails, the previous
+`dnsmasq --test`, `vtysh -C`, `sh -n`; ppp.conf values are quoted/escaped for ppp's own parser).
+Live changes are applied as a diff (only the affected interfaces/routes/services are touched;
+links do not flap, and a PPPoE session is only redialled when its own settings change). If any step fails, the previous
 files are restored and the inverse diff is applied, and running-config stays unchanged.
 
 ## Development / testing without FreeBSD
@@ -302,4 +309,12 @@ Rendered files land in `$ROUTERCLI_SANDBOX/etc/...`; commands that would have ru
   used instead, so this does not apply to the installer image.
 * `freebsd-update` does not work on `stable/15` systems; update by installing a newer image
   (see BUILDING_FREEBSD.md Part 7).
+* PPPoE (`interface dialerN`): IPv4 only (IPv6 over PPPoE / DHCPv6-PD is not configured); one
+  session per dialer and dial pool; several ports in one pool are tried in order. PPP passwords
+  cannot start with `!` or a space (FreeBSD ppp would run `!...` as a program). The password is
+  stored in clear text in `/etc/ppp/ppp.conf` (mode 0600) and in the config store
+  (`/var/db/router-cli`, root:router 0750); `show running-config` shows it as Cisco type 7, which
+  is only obfuscation. The `router` account can read it through the CLI (privileged mode).
+* PPPoE was verified against the ppp(8) sources of `stable/15` (its config parser was compiled
+  and fed the generated ppp.conf), but not yet against a live ISP.
 * Verify on your FreeBSD release: FRR package name (`pkg search frr`), `vtysh -C` syntax checking.

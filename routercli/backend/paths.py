@@ -20,6 +20,8 @@ DNSMASQ_CONF = p("/usr/local/etc/dnsmasq.conf")
 FRR_CONF = p("/usr/local/etc/frr/frr.conf")
 NTP_CONF = p("/etc/ntp.conf")
 RESOLV_CONF = p("/etc/resolv.conf")
+PPP_CONF = p("/etc/ppp/ppp.conf")
+PPP_LOG = "/var/log/ppp.log"
 DNSMASQ_LEASES = p("/var/db/dnsmasq.leases")
 
 STATE_DIR = p("/var/db/router-cli")

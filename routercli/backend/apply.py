@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from routercli.backend import paths
-from routercli.backend import render_dnsmasq, render_frr, render_misc, render_pf, render_rcconf
+from routercli.backend import render_dnsmasq, render_frr, render_misc, render_pf, render_ppp, render_rcconf
 from routercli.backend.system import CommandError, Runner, read_file, write_atomic, write_temp
 from routercli.config.model import Interface, RouterConfig
 
@@ -35,6 +35,7 @@ class Step:
     argv: list
     tolerate: bool = False
     fallback: Optional[list] = None
+    wait_exit: Optional[str] = None     # pgrep -f pattern: wait until that process is gone
 
 
 @dataclass
@@ -110,7 +111,17 @@ def render_all(cfg: RouterConfig) -> dict:
         files[paths.NTP_CONF] = render_misc.render_ntp(cfg)
     if cfg.name_servers:
         files[paths.RESOLV_CONF] = render_misc.render_resolv(cfg)
+    if render_ppp.needed(cfg, read_file(paths.PPP_CONF)):
+        files[paths.PPP_CONF] = render_ppp.render(cfg)
     return files
+
+
+# Files holding secrets are created without group/other access.
+FILE_MODES = {paths.PPP_CONF: 0o600}
+
+
+def write_rendered(path: str, content: str) -> None:
+    write_atomic(path, content, FILE_MODES.get(path, 0o644))
 
 
 VALIDATORS = {
@@ -192,6 +203,8 @@ def _iface_steps(old: RouterConfig, new: RouterConfig) -> list:
     steps = []
     for name in sorted(set(old.interfaces) - set(new.interfaces)):
         o = old.interfaces[name]
+        if o.is_dialer:                      # ppp(8) owns dialer interfaces (_ppp_steps)
+            continue
         if o.is_vlan or o.is_cloned:
             steps.append(Step(f"destroy {name}", ["ifconfig", name, "destroy"], tolerate=True))
             continue
@@ -218,6 +231,8 @@ def _iface_steps(old: RouterConfig, new: RouterConfig) -> list:
             steps.append(Step(f"create {itf.name}", ["ifconfig", itf.name, "create"]))
 
     for itf in new.sorted_interfaces():
+        if itf.is_dialer:
+            continue
         o = old.interfaces.get(itf.name) or Interface(name=itf.name)
         n = itf.name
         if o.dhcp_client and not itf.dhcp_client:
@@ -256,6 +271,39 @@ def _iface_steps(old: RouterConfig, new: RouterConfig) -> list:
     return steps
 
 
+def ppp_restart_steps(name: str) -> list:
+    return [Step(f"stop PPPoE {name}", ["service", "ppp", "onestop", name], tolerate=True,
+                 wait_exit=render_ppp.ppp_pattern(name)),
+            Step(f"start PPPoE {name}", ["service", "ppp", "start", name])]
+
+
+def _ppp_steps(old: RouterConfig, new: RouterConfig) -> list:
+    """(Re)start a dialer's ppp process only when its own profile changed."""
+    old_p = {d.name: render_ppp.profile_lines(old, d) for d in old.active_dialers()}
+    new_p = {d.name: render_ppp.profile_lines(new, d) for d in new.active_dialers()}
+    steps = []
+    for name in sorted(set(old_p) - set(new_p)):
+        steps.append(Step(f"stop PPPoE {name}", ["service", "ppp", "onestop", name], tolerate=True,
+                          wait_exit=render_ppp.ppp_pattern(name)))
+    for name in sorted(new_p):
+        if old_p.get(name) != new_p[name]:
+            steps += ppp_restart_steps(name)
+    return steps
+
+
+def _wait_exit(runner: Runner, pattern: str, timeout: float = 15.0) -> None:
+    """ppp needs a moment to send PADT and release its tun device before a restart."""
+    if runner.sandbox:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if runner.run(["pgrep", "-f", pattern], mutating=False, check=False).rc != 0:
+            return
+        time.sleep(0.5)
+    runner.run(["pkill", "-9", "-f", pattern], check=False)
+    time.sleep(1)
+
+
 def live_steps(old: RouterConfig, new: RouterConfig, changed: set) -> list:
     steps = []
     old_host = f"{old.hostname}.{old.domain_name}" if old.domain_name else old.hostname
@@ -269,8 +317,8 @@ def live_steps(old: RouterConfig, new: RouterConfig, changed: set) -> list:
 
     steps += _iface_steps(old, new)
 
-    old_routes = {r.key(): r for r in old.routes}
-    new_routes = {r.key(): r for r in new.routes}
+    old_routes = {r.key(): r for r in old.routes if not r.via_dialer}
+    new_routes = {r.key(): r for r in new.routes if not r.via_dialer}
     for k in old_routes.keys() - new_routes.keys():
         steps.append(Step(f"delete route {old_routes[k].prefix}", _route_argv("delete", old_routes[k]), tolerate=True))
     for k in new_routes.keys() - old_routes.keys():
@@ -281,6 +329,8 @@ def live_steps(old: RouterConfig, new: RouterConfig, changed: set) -> list:
         steps.append(Step("load pf ruleset", ["pfctl", "-f", paths.PF_CONF]))
         steps.append(Step("enable pf", ["pfctl", "-e"], tolerate=True))
         steps.append(Step("start pflog", ["service", "pflog", "start"], tolerate=True))
+
+    steps += _ppp_steps(old, new)
 
     old_dm = old.dns_server or bool(old.dhcp_pools)
     new_dm = new.dns_server or bool(new.dhcp_pools)
@@ -305,7 +355,11 @@ def live_steps(old: RouterConfig, new: RouterConfig, changed: set) -> list:
 def run_steps(runner: Runner, steps: list, best_effort: bool = False) -> None:
     for st in steps:
         try:
-            runner.run(st.argv)
+            try:
+                runner.run(st.argv)
+            finally:
+                if st.wait_exit:
+                    _wait_exit(runner, st.wait_exit)
         except CommandError as exc:
             if st.fallback:
                 try:
@@ -337,7 +391,7 @@ def commit(new: RouterConfig, user: str, comment: str = "", runner: Optional[Run
     rep.changed_files = sorted(changed)
     bdir = backup(files.keys())
     for path in sorted(changed):
-        write_atomic(path, files[path])
+        write_rendered(path, files[path])
 
     steps = live_steps(old, new, changed)
     try:

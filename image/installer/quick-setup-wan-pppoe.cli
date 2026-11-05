@@ -1,0 +1,19 @@
+interface @WAN@
+ description WAN (PPPoE)
+ no shutdown
+ exit
+interface @PORT@
+ pppoe enable group global
+ pppoe-client dial-pool-number 1
+ exit
+interface dialer1
+ description Internet (PPPoE)
+ ip address negotiated
+ ip nat outside
+ encapsulation ppp
+ dialer pool 1
+ ppp chap hostname @USER@
+ ppp chap password 7 @PASS7@
+ ppp ipcp dns request
+ exit
+ip route 0.0.0.0 0.0.0.0 dialer1

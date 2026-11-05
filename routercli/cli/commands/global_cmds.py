@@ -5,7 +5,7 @@ import ipaddress
 from routercli.auth import hash_secret
 from routercli.cli import modes as M
 from routercli.cli.commands import registry as R
-from routercli.config.model import DOMAIN_RE, HOSTNAME_RE, SECRET_RE, StaticRoute
+from routercli.config.model import DOMAIN_RE, HOSTNAME_RE, SECRET_RE, StaticRoute, is_dialer_name
 
 CF = [M.CONFIG]
 ALL_CF = list(M.CONFIG_MODES)
@@ -148,6 +148,15 @@ def interface(s, a, neg):
                 del s.cfg.interfaces[i]
         return
     base = name.split(".")[0]
+    if is_dialer_name(base):
+        if "." in name:
+            s.error("% Dialer interfaces have no subinterfaces (for PPPoE over a VLAN put "
+                    "'pppoe-client' on the VLAN, e.g. interface re1.35)")
+        if int(base[6:]) > 255:
+            s.error("% Dialer interface number must be 0-255")
+        s.cfg.interface(name)
+        s.push(M.IF, name)
+        return
     known = s.interface_names()
     if not base.startswith("lo") and base not in known:
         s.print(f"% Warning: {base} does not exist on this system (configuration will still be accepted)")

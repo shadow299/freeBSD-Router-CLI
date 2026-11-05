@@ -1,0 +1,5 @@
+interface @WAN@
+ description WAN
+ ip address dhcp
+ ip nat outside
+ exit

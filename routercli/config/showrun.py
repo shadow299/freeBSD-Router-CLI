@@ -2,6 +2,7 @@
 
 import ipaddress
 
+from routercli.auth import type7_encode
 from routercli.config.model import AclEntry, RouterConfig
 
 PORT_NAMES = {"www": 80, "http": 80, "https": 443, "ssh": 22, "telnet": 23, "ftp": 21, "ftp-data": 20,
@@ -72,6 +73,8 @@ def interface_text(itf) -> list:
         L.append(" no hardware-offload")
     if itf.dhcp_client:
         L.append(" ip address dhcp")
+    elif itf.negotiated:
+        L.append(" ip address negotiated")
     elif not itf.ipv4:
         L.append(" no ip address")
     for n, a in enumerate(itf.ipv4):
@@ -85,6 +88,22 @@ def interface_text(itf) -> list:
         L.append(f" ip access-group {itf.acl_in} in")
     if itf.acl_out:
         L.append(f" ip access-group {itf.acl_out} out")
+    if itf.pppoe_pool is not None:
+        L.append(" pppoe enable group global")
+        L.append(f" pppoe-client dial-pool-number {itf.pppoe_pool}"
+                 + (f" service-name {itf.pppoe_service}" if itf.pppoe_service else ""))
+    if itf.is_dialer:
+        L.append(" encapsulation ppp")
+        if itf.dialer_pool is not None:
+            L.append(f" dialer pool {itf.dialer_pool}")
+        if itf.ppp_username:
+            L.append(f" ppp chap hostname {itf.ppp_username}")
+        if itf.ppp_password:
+            L.append(f" ppp chap password 7 {type7_encode(itf.ppp_password)}")
+        if itf.ppp_username and itf.ppp_password:
+            L.append(f" ppp pap sent-username {itf.ppp_username} password 7 {type7_encode(itf.ppp_password)}")
+        if itf.ppp_dns:
+            L.append(" ppp ipcp dns request")
     L.append(" shutdown" if itf.shutdown else " no shutdown")
     return L
 
@@ -131,7 +150,7 @@ def render(cfg: RouterConfig, header: str = "") -> str:
         for b in pool.bindings:
             L.append(f" static-bind {b['mac']} {b['ip']}" + (f" {b['hostname']}" if b.get("hostname") else ""))
     L.append("!")
-    for itf in cfg.sorted_interfaces():
+    for itf in sorted(cfg.sorted_interfaces(), key=lambda i: i.is_dialer):    # dialers last, like IOS
         L += interface_text(itf)
         L.append("!")
     if cfg.ospf:

@@ -39,7 +39,8 @@ def interface_vars(cfg: RouterConfig) -> dict:
         if itf.is_vlan:
             parents.setdefault(itf.parent, []).append(itf.vlan_id)
 
-    names = [i.name for i in cfg.sorted_interfaces()]
+    # dialerN interfaces are created and configured by ppp(8) (see render_ppp).
+    names = [i.name for i in cfg.sorted_interfaces() if not i.is_dialer]
     for p in parents:
         if p not in cfg.interfaces:
             names.append(p)
@@ -94,6 +95,8 @@ def render_vars(cfg: RouterConfig) -> list:
 
     v4, v6 = [], []
     for r in cfg.routes:
+        if r.via_dialer:                 # installed by ppp(8): 'add! ... HISADDR'
+            continue
         if r.is_default:
             vs.append(("defaultrouter" if r.version == 4 else "ipv6_defaultrouter", r.nexthop))
             continue
@@ -111,6 +114,7 @@ def render_vars(cfg: RouterConfig) -> list:
         vs.append(("ipv6_static_routes", " ".join(f"rcli6_{n}" for n in range(len(v6)))))
         vs.extend((f"ipv6_route_rcli6_{n}", s) for n, s in enumerate(v6))
 
+    vs += ppp_vars(cfg)
     vs += [("pf_enable", "YES"), ("pf_rules", "/etc/pf.conf"), ("pflog_enable", "YES")]
     dnsmasq = cfg.dns_server or bool(cfg.dhcp_pools)
     vs += [("dnsmasq_enable", "YES" if dnsmasq else "NO"), ("dnsmasq_conf", "/usr/local/etc/dnsmasq.conf")]
@@ -122,6 +126,19 @@ def render_vars(cfg: RouterConfig) -> list:
     if daemons:
         vs += [("frr_daemons", " ".join(daemons)), ("frr_vtysh_boot", "YES")]
     vs.append(("routercli_enable", "YES"))
+    return vs
+
+
+def ppp_vars(cfg: RouterConfig) -> list:
+    """rc.d/ppp: one -ddial profile per active dialer, tun unit = dialer number."""
+    if not cfg.dialers():
+        return []
+    active = cfg.active_dialers()
+    if not active:
+        return [("ppp_enable", "NO")]
+    vs = [("ppp_enable", "YES"), ("ppp_mode", "ddial"), ("ppp_nat", "NO"),
+          ("ppp_profile", " ".join(d.name for d in active))]
+    vs += [(f"ppp_{d.name}_unit", str(d.dialer_unit)) for d in active]
     return vs
 
 

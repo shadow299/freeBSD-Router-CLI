@@ -39,6 +39,7 @@ EXEC = {
     "bgp-table": (["vtysh", "-c", "show bgp ipv4 unicast"], False),
     "frr-route": (["vtysh", "-c", "show ip route"], False),
     "logging": (["tail", "-n", "200", "/var/log/messages"], False),
+    "ppp-log": (["tail", "-n", "100", paths.PPP_LOG], False),
     "clear-nat": (["pfctl", "-F", "states"], True),
     "clear-arp": (["arp", "-d", "-a"], True),
     "clear-ospf": (["vtysh", "-c", "clear ip ospf process"], True),
@@ -156,7 +157,7 @@ def cmd_init(req: dict) -> dict:
             files = apply.render_all(cfg)
             apply.validate_files(Runner(), files)
             for path, content in files.items():
-                write_atomic(path, content)
+                apply.write_rendered(path, content)
         os.makedirs(paths.ARCHIVE_DIR, exist_ok=True)
         apply.save_config(paths.RUNNING, cfg)
         apply.save_config(paths.STARTUP, cfg)
@@ -174,6 +175,24 @@ def cmd_exec(name: str) -> dict:
     return {"ok": res.rc == 0, "output": res.output, "error": "" if res.rc == 0 else res.output}
 
 
+def cmd_ppp_restart(name: str) -> dict:
+    """clear pppoe all / clear interface dialerN: reconnect PPPoE sessions."""
+    with apply.state_lock():
+        running = apply.load_config(paths.RUNNING) or RouterConfig()
+        active = [d.name for d in running.active_dialers()]
+        targets = active if name == "all" else [name]
+        if not targets or any(t not in active for t in targets):
+            return {"ok": False, "error": f"{name} is not an active dialer interface"}
+        runner = Runner()
+        steps = []
+        for t in targets:
+            steps += apply.ppp_restart_steps(t)
+        apply.run_steps(runner, steps)
+    _syslog(f"{_user()} restarted PPPoE {' '.join(targets)}")
+    return {"ok": True, "message": "Restarted PPPoE " + ", ".join(targets) +
+            " (the session needs a few seconds to come up: 'show pppoe session')"}
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     os.umask(0o027)
@@ -181,7 +200,7 @@ def main(argv=None) -> int:
         print(json.dumps({"ok": False, "error": "router-apply must run as root (via doas)"}))
         return 1
     if not args:
-        print("usage: router-apply {commit|save-startup|erase-startup|exec NAME|boot|init}", file=sys.stderr)
+        print("usage: router-apply {commit|save-startup|erase-startup|exec NAME|ppp-restart NAME|boot|init}", file=sys.stderr)
         return 2
     cmd = args[0]
     try:
@@ -193,6 +212,8 @@ def main(argv=None) -> int:
             out = cmd_erase_startup()
         elif cmd == "exec" and len(args) == 2:
             out = cmd_exec(args[1])
+        elif cmd == "ppp-restart" and len(args) == 2:
+            out = cmd_ppp_restart(args[1])
         elif cmd == "confirm-timer" and len(args) == 3:
             out = cmd_confirm_timer(args[1], args[2])
         elif cmd == "boot":

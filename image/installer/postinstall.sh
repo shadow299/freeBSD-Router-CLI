@@ -10,7 +10,7 @@
 # 1. installs the packages + router-cli without network access
 # 2. creates the 'router' account (password) and the CLI 'enable secret'
 # 3. locks down sshd (router -> CLI only, root -> normal shell, password allowed)
-# 4. optional quick setup: WAN (DHCP from ISP) + LAN (192.168.1.1/24, DHCP, DNS, NAT)
+# 4. optional quick setup: WAN (DHCP or PPPoE) + LAN (192.168.1.1/24, DHCP, DNS, NAT)
 #
 set -eu
 
@@ -25,6 +25,15 @@ ask() {     # ask "Question" default  -> $REPLY
     read -r REPLY || REPLY=""
     [ -n "$REPLY" ] || REPLY=$2
 }
+read_secret() {     # read_secret "Prompt" -> the typed text on stdout (not echoed)
+    printf '%s: ' "$1" >&2
+    stty -echo 2>/dev/null || true
+    IFS= read -r _s || _s=""
+    stty echo 2>/dev/null || true
+    printf '\n' >&2
+    printf '%s' "$_s"
+}
+trap 'stty echo 2>/dev/null || true' EXIT
 
 # ---------------------------------------------------------------------------
 msg "Copying router-cli to $SHARE"
@@ -100,16 +109,46 @@ quick_setup() {
     net=${lanip%.*}
     hn=$(echo "${host%%.*}" | tr -cd 'A-Za-z0-9-'); [ -n "$hn" ] || hn=router
 
+    echo
+    echo "  How does $wan connect to the internet?"
+    echo "    dhcp  - the ISP's modem/ONT hands out an address automatically (cable, most fibre/LTE boxes)"
+    echo "    pppoe - your ISP gave you a PPPoE user name and password (DSL, many fibre ISPs)"
+    while :; do
+        ask "Connection type (dhcp/pppoe)" "dhcp"
+        case "$REPLY" in [Dd]*) wantype=dhcp; break ;; [Pp]*) wantype=pppoe; break ;; esac
+    done
+    qs_user=""; qs_pass=""; qs_vlan=""
+    if [ "$wantype" = pppoe ]; then
+        while :; do
+            ask "PPPoE user name (from your ISP)" ""; qs_user=$REPLY
+            qs_pass=$(read_secret "PPPoE password (not shown)")
+            again=$(read_secret "Retype the PPPoE password")
+            [ "$qs_pass" = "$again" ] || { echo "  the passwords do not match - again please"; continue; }
+            ask "ISP VLAN ID (only if your ISP gave you one, e.g. 35; empty = none)" ""; qs_vlan=$REPLY
+            QS_USER=$qs_user QS_PASS=$qs_pass QS_VLAN=$qs_vlan \
+                "$PY" -I "$SHARE/image/installer/quick_setup.py" check && break
+        done
+        again=""
+    fi
+
     sb=$(mktemp -d /tmp/router-quick.XXXXXX)
     mkdir -p "$sb/etc" "$sb/var/db/router-cli/archive" "$sb/usr/local/etc"
     cp /etc/rc.conf "$sb/etc/rc.conf"
     cp /var/db/router-cli/running-config.json "$sb/var/db/router-cli/"
-    # Run the template through the real CLI in a sandbox (validates everything,
-    # changes nothing), then install the result with 'router-apply init'.
-    out=$(sed -e "s/@HOST@/$hn/g" -e "s/@WAN@/$wan/g" -e "s/@LAN@/$lan/g" \
-              -e "s/@LANIP@/$lanip/g" -e "s/@NET@/$net/g" "$SHARE/image/installer/quick-setup.cli" | \
-          env ROUTERCLI_SANDBOX="$sb" ROUTERCLI_IFACES="$ifaces" \
-              "$PY" -I /usr/local/bin/router-cli --privileged 2>&1) || true
+    # Build the CLI script (quick_setup.py fills the templates; values go through
+    # the environment, never through the shell or sed), run it through the real CLI
+    # in a sandbox (validates everything, changes nothing), then install the
+    # result with 'router-apply init'.
+    if ! env QS_TYPE="$wantype" QS_HOST="$hn" QS_WAN="$wan" QS_LAN="$lan" QS_LANIP="$lanip" \
+            QS_VLAN="$qs_vlan" QS_USER="$qs_user" QS_PASS="$qs_pass" \
+            "$PY" -I "$SHARE/image/installer/quick_setup.py" > "$sb/quick.cli"; then
+        rm -rf "$sb"
+        echo "  quick setup failed - the router starts unconfigured (see docs/EXAMPLES.md section 7)"
+        return 0
+    fi
+    qs_pass=""
+    out=$(env ROUTERCLI_SANDBOX="$sb" ROUTERCLI_IFACES="$ifaces" \
+              "$PY" -I /usr/local/bin/router-cli --privileged < "$sb/quick.cli" 2>&1) || true
     if printf '%s\n' "$out" | grep -q '^ *%'; then
         printf '%s\n' "$out"
         rm -rf "$sb"
@@ -122,7 +161,12 @@ print(json.dumps({"force": True, "write_files": True, "config": json.load(open(s
 ' "$sb/var/db/router-cli/running-config.json" | /usr/local/libexec/router-apply init
     rm -rf "$sb"
     echo
-    echo "  WAN $wan: address from your ISP (DHCP), firewalled, NAT"
+    if [ "$wantype" = pppoe ]; then
+        echo "  WAN $wan: PPPoE${qs_vlan:+ on VLAN $qs_vlan} as '$qs_user' (interface dialer1), firewalled, NAT"
+        echo "            check it after the reboot with: show pppoe session"
+    else
+        echo "  WAN $wan: address from your ISP (DHCP), firewalled, NAT"
+    fi
     echo "  LAN $lan: $lanip/24, DHCP for PCs $net.50 - $net.254, DNS on the router"
     QUICK_LAN=$lan; QUICK_IP=$lanip
 }
@@ -133,7 +177,7 @@ if [ "$nif" -eq 0 ]; then
     echo "  no network ports detected - skipping (configure later with router-cli)"
 else
     echo "  This makes the box a working home/office router right away:"
-    echo "    WAN port  -> internet (address from your ISP by DHCP), firewall + NAT"
+    echo "    WAN port  -> internet (DHCP, or PPPoE with your ISP login), firewall + NAT"
     echo "    LAN port  -> 192.168.1.1, gives addresses to your PCs (DHCP) and DNS"
     echo "  Everything can be changed later in the CLI ('configure terminal')."
     ask "Do the quick setup now? (yes/no)" "yes"

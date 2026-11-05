@@ -21,6 +21,14 @@ HOSTNAME_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)((?!-)[A-Za-z0-9-]{1,63}(?<!-)\.)*(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
 MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 SECRET_RE = re.compile(r"^scrypt\$[0-9]+\$[0-9]+\$[0-9]+\$[0-9a-f]{32}\$[0-9a-f]{128}$")
+DIALER_RE = re.compile(r"^dialer([0-9]{1,3})$")
+# PPP credentials end up in /etc/ppp/ppp.conf, where render_ppp quotes and escapes them.
+PPP_USER_RE = re.compile(r"^(?!!)[\x21-\x7e]{1,64}$")
+# No leading '!': ppp's CHAP code runs "!..." as a program while PAP sends it
+# literally, so no escaping is correct for both (chap.c / pap.c).
+PPP_SECRET_RE = re.compile(r"^(?![ !])[\x20-\x7e]{0,63}[\x21-\x7e]$")
+PPPOE_SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@/+-]{1,64}$")
+PPPOE_MAX_MTU = 1492
 
 PROTOCOLS = ("ip", "tcp", "udp", "icmp", "gre", "esp", "ah", "ospf")
 PORT_OPS = ("eq", "neq", "lt", "gt", "range")
@@ -39,6 +47,10 @@ def _check(cond: bool, msg: str) -> None:
 def check_iface(name: str) -> str:
     _check(isinstance(name, str) and bool(IFACE_RE.match(name)), f"invalid interface name {name!r}")
     return name
+
+
+def is_dialer_name(name) -> bool:
+    return isinstance(name, str) and bool(DIALER_RE.match(name))
 
 
 def check_name(name: str, what: str = "name") -> str:
@@ -125,6 +137,15 @@ class Interface:
     acl_in: Optional[str] = None
     acl_out: Optional[str] = None
     offload: bool = True                          # False: disable NIC checksum/TSO/LRO offload
+    # PPPoE client, logical side (interface dialerN -> ppp(8) profile "dialerN")
+    negotiated: bool = False                      # ip address negotiated
+    dialer_pool: Optional[int] = None             # dialer pool N
+    ppp_username: str = ""                        # ppp chap hostname / pap sent-username
+    ppp_password: str = ""                        # ppp chap password / pap ... password
+    ppp_dns: bool = False                         # ppp ipcp dns request
+    # PPPoE client, physical side (Ethernet port or VLAN that carries the session)
+    pppoe_pool: Optional[int] = None              # pppoe-client dial-pool-number N
+    pppoe_service: str = ""                       # ... service-name NAME
 
     @property
     def is_vlan(self) -> bool:
@@ -142,9 +163,50 @@ class Interface:
     def is_cloned(self) -> bool:
         return self.name.startswith("lo") and self.name != "lo0"
 
+    @property
+    def is_dialer(self) -> bool:
+        return is_dialer_name(self.name)
+
+    @property
+    def dialer_unit(self) -> Optional[int]:
+        return int(DIALER_RE.match(self.name).group(1)) if self.is_dialer else None
+
+    def _validate_ppp(self) -> None:
+        n = self.name
+        if self.is_dialer:
+            _check(0 <= self.dialer_unit <= 255, f"{n}: dialer interface number must be 0-255")
+            _check(not self.ipv4 and not self.dhcp_client,
+                   f"{n}: dialer interfaces get their address from the ISP - use 'ip address negotiated'")
+            _check(not self.ipv6, f"{n}: IPv6 addresses are not supported on dialer interfaces")
+            _check(self.pppoe_pool is None, f"{n}: 'pppoe-client' belongs on the Ethernet port, not the dialer")
+            if self.mtu is not None:
+                _check(576 <= self.mtu <= PPPOE_MAX_MTU, f"{n}: PPPoE mtu must be 576-{PPPOE_MAX_MTU}")
+            if self.dialer_pool is not None:
+                _check(isinstance(self.dialer_pool, int) and 1 <= self.dialer_pool <= 255,
+                       f"{n}: dialer pool must be 1-255")
+            if self.ppp_username:
+                _check(isinstance(self.ppp_username, str) and bool(PPP_USER_RE.match(self.ppp_username)),
+                       f"{n}: invalid PPP username (1-64 printable characters, no spaces, not starting with '!')")
+            if self.ppp_password:
+                _check(isinstance(self.ppp_password, str) and bool(PPP_SECRET_RE.match(self.ppp_password)),
+                       f"{n}: invalid PPP password (1-64 printable ASCII characters, "
+                       "not starting with '!' or a space)")
+        else:
+            _check(not (self.negotiated or self.dialer_pool is not None or self.ppp_username or
+                        self.ppp_password or self.ppp_dns),
+                   f"{n}: PPP settings are only valid on dialer interfaces (interface dialer1)")
+            if self.pppoe_pool is not None:
+                _check(isinstance(self.pppoe_pool, int) and 1 <= self.pppoe_pool <= 255,
+                       f"{n}: pppoe-client dial-pool-number must be 1-255")
+                _check(not self.is_cloned, f"{n}: PPPoE needs an Ethernet port or VLAN subinterface")
+            if self.pppoe_service:
+                _check(self.pppoe_pool is not None, f"{n}: service-name needs pppoe-client dial-pool-number")
+                _check(bool(PPPOE_SERVICE_RE.match(self.pppoe_service)), f"{n}: invalid PPPoE service-name")
+
     def validate(self) -> None:
         check_iface(self.name)
         _check(self.name != "lo0", "lo0 is managed by the system")
+        self._validate_ppp()
         if self.is_vlan:
             _check(1 <= self.vlan_id <= 4094, f"{self.name}: VLAN id must be 1-4094")
         if self.description:
@@ -166,7 +228,11 @@ class Interface:
             name=d["name"], description=d.get("description", ""), shutdown=bool(d.get("shutdown", False)),
             dhcp_client=bool(d.get("dhcp_client", False)), ipv4=list(d.get("ipv4", [])),
             ipv6=list(d.get("ipv6", [])), mtu=d.get("mtu"), nat=d.get("nat"),
-            acl_in=d.get("acl_in"), acl_out=d.get("acl_out"), offload=bool(d.get("offload", True)))
+            acl_in=d.get("acl_in"), acl_out=d.get("acl_out"), offload=bool(d.get("offload", True)),
+            negotiated=bool(d.get("negotiated", False)), dialer_pool=d.get("dialer_pool"),
+            ppp_username=d.get("ppp_username", ""), ppp_password=d.get("ppp_password", ""),
+            ppp_dns=bool(d.get("ppp_dns", False)), pppoe_pool=d.get("pppoe_pool"),
+            pppoe_service=d.get("pppoe_service", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +257,11 @@ class StaticRoute:
     def key(self) -> tuple:
         return (self.prefix, self.nexthop, self.interface, self.blackhole)
 
+    @property
+    def via_dialer(self) -> bool:
+        """Installed by ppp(8) ('add! ... HISADDR') instead of rc.conf/route(8)."""
+        return is_dialer_name(self.interface)
+
     def validate(self) -> None:
         self.prefix = check_net(self.prefix)
         targets = sum(x is not None and x is not False for x in (self.nexthop, self.interface, self.blackhole or None))
@@ -201,8 +272,11 @@ class StaticRoute:
                    f"route {self.prefix}: next-hop address family mismatch")
         if self.interface:
             check_iface(self.interface)
-        if self.is_default:
-            _check(self.nexthop is not None, "default route requires a next-hop address")
+        if self.via_dialer:
+            _check(self.version == 4, f"route {self.prefix}: IPv6 routes over dialer interfaces are not supported")
+        elif self.is_default:
+            _check(self.nexthop is not None,
+                   "default route requires a next-hop address (or a dialer interface, e.g. 'dialer1')")
 
     @classmethod
     def from_dict(cls, d: dict) -> "StaticRoute":
@@ -511,6 +585,17 @@ class RouterConfig:
     def inside_interfaces(self) -> list:
         return [i.name for i in self.sorted_interfaces() if i.nat == "inside"]
 
+    def dialers(self) -> list:
+        return [i for i in self.sorted_interfaces() if i.is_dialer]
+
+    def pppoe_ports(self, pool: Optional[int]) -> list:
+        """Ethernet ports/VLANs with 'pppoe-client dial-pool-number <pool>'."""
+        return [i for i in self.sorted_interfaces() if pool is not None and i.pppoe_pool == pool]
+
+    def active_dialers(self) -> list:
+        """Dialers that get a running ppp(8) process."""
+        return [d for d in self.dialers() if not d.shutdown]
+
     # -- (de)serialisation -------------------------------------------------
     def to_dict(self) -> dict:
         return asdict(self)
@@ -612,6 +697,8 @@ class RouterConfig:
         if self.nat_rules and not self.outside_interfaces():
             warnings.append("NAT rules configured but no interface has 'ip nat outside'")
 
+        warnings += self._validate_pppoe()
+
         for name, pool in self.dhcp_pools.items():
             _check(name == pool.name, "DHCP pool key mismatch")
             pool.validate()
@@ -628,6 +715,46 @@ class RouterConfig:
         for proto in (self.ospf, self.rip, self.bgp):
             if proto:
                 proto.validate()
+        return warnings
+
+
+    def _validate_pppoe(self) -> list:
+        warnings = []
+        pools = {}
+        for d in self.dialers():
+            if d.dialer_pool is not None:
+                _check(d.dialer_pool not in pools,
+                       f"{d.name} and {pools.get(d.dialer_pool)} use the same dialer pool {d.dialer_pool}")
+                pools[d.dialer_pool] = d.name
+            if d.shutdown:
+                continue
+            missing = []
+            if d.dialer_pool is None:
+                missing.append("'dialer pool N'")
+            elif not self.pppoe_ports(d.dialer_pool):
+                missing.append(f"an Ethernet port with 'pppoe-client dial-pool-number {d.dialer_pool}'")
+            if not d.negotiated:
+                missing.append("'ip address negotiated'")
+            if not d.ppp_username:
+                missing.append("'ppp chap hostname USERNAME'")
+            if not d.ppp_password:
+                missing.append("'ppp chap password PASSWORD'")
+            _check(not missing, f"{d.name} is incomplete, it needs " + ", ".join(missing)
+                   + " (or 'shutdown' it)")
+            for port in self.pppoe_ports(d.dialer_pool):
+                _check(not port.shutdown, f"{d.name}: PPPoE port {port.name} is shut down")
+            if d.ppp_dns and self.name_servers:
+                warnings.append(f"{d.name}: 'ppp ipcp dns request' is ignored because 'ip name-server' is set")
+            if not d.ppp_dns and not self.name_servers and self.dns_server:
+                warnings.append(f"{d.name}: no upstream DNS - add 'ppp ipcp dns request' on {d.name} "
+                                "or 'ip name-server ...'")
+        for itf in self.interfaces.values():
+            if itf.pppoe_pool is not None and itf.pppoe_pool not in pools:
+                warnings.append(f"{itf.name}: no dialer interface has 'dialer pool {itf.pppoe_pool}'")
+        for r in self.routes:
+            if r.via_dialer:
+                _check(r.interface in self.interfaces and self.interfaces[r.interface].is_dialer,
+                       f"route {r.prefix}: interface {r.interface} is not configured")
         return warnings
 
 

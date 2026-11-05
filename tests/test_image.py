@@ -1,8 +1,9 @@
 """Tests for the installer-image pieces that can run on any OS.
 
-* image/installer/quick-setup.cli must run cleanly through the real CLI (sandbox),
-  exactly the way postinstall.sh does it, and 'router-apply init' with
-  write_files must render rc.conf / pf.conf / dnsmasq.conf from the result.
+* image/installer/quick_setup.py + the quick-setup templates (DHCP and PPPoE WAN)
+  must run cleanly through the real CLI (sandbox), exactly the way postinstall.sh
+  does it, and 'router-apply init' with write_files must render rc.conf / pf.conf /
+  dnsmasq.conf (and ppp.conf for PPPoE) from the result.
 * image/metalog.sh must list every directory and file of the payload.
 * the shell scripts must at least parse.
 """
@@ -16,15 +17,16 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEMPLATE = os.path.join(ROOT, "image", "installer", "quick-setup.cli")
+QUICK = os.path.join(ROOT, "image", "installer", "quick_setup.py")
 
 
-def fill(template, **kv):
-    with open(template, encoding="utf-8") as f:
-        text = f.read()
-    for k, v in kv.items():
-        text = text.replace(f"@{k}@", v)
-    return text
+def quick_script(**env):
+    """Run quick_setup.py exactly like postinstall.sh does (values via QS_* environment)."""
+    e = dict(os.environ, **{f"QS_{k}": v for k, v in env.items()})
+    cp = subprocess.run([sys.executable, "-I", QUICK], capture_output=True, text=True, env=e)
+    if cp.returncode:
+        raise AssertionError(cp.stderr)
+    return cp.stdout
 
 
 class TestQuickSetup(unittest.TestCase):
@@ -57,20 +59,23 @@ class TestQuickSetup(unittest.TestCase):
         with open(os.path.join(self.real, path.lstrip("/")), encoding="utf-8") as f:
             return f.read()
 
-    def test_template_and_install(self):
-        script = fill(TEMPLATE, HOST="gw1", WAN="rge0", LAN="re0", LANIP="10.20.30.1", NET="10.20.30")
-        self.assertNotIn("@", script.replace("! postinstall.sh fills in the @...@", ""))
+    def install(self, script):
+        """postinstall.sh: CLI in a sandbox, then 'router-apply init' with write_files."""
+        self.assertNotRegex("\n".join(l for l in script.splitlines() if not l.startswith("!")), r"@[A-Z0-9]+@")
         env = dict(os.environ, ROUTERCLI_SANDBOX=self.sb, ROUTERCLI_IFACES="re0 rge0")
         out = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "bin/router-cli"), "--privileged"],
                              input=script, capture_output=True, text=True, env=env, timeout=120).stdout
         errors = [l for l in out.splitlines() if l.lstrip().startswith("%")]
         self.assertEqual(errors, [], out)
         self.assertIn("Commit 1 applied", out)
-
         with open(os.path.join(self.sb, "var/db/router-cli/running-config.json")) as f:
             cfg = json.load(f)
         res = self.helper(self.real, "init", {"force": True, "write_files": True, "config": cfg})
         self.assertTrue(res["ok"], res)
+        return cfg
+
+    def test_template_and_install(self):
+        self.install(quick_script(TYPE="dhcp", HOST="gw1", WAN="rge0", LAN="re0", LANIP="10.20.30.1"))
 
         rc = self.read("/etc/rc.conf")
         self.assertTrue(rc.startswith('hostname="gw1.example.net"\nsshd_enable="YES"'))   # bsdinstall's part kept
@@ -85,6 +90,34 @@ class TestQuickSetup(unittest.TestCase):
         running = json.loads(self.read("/var/db/router-cli/running-config.json"))
         self.assertTrue(running["enable_secret"])                                         # secret kept
         self.assertTrue(os.path.exists(os.path.join(self.real, "var/db/router-cli/startup-config.json")))
+
+    def test_pppoe_quick_setup(self):
+        password = 'Pa ss"w$rd\\~#?'
+        cfg = self.install(quick_script(TYPE="pppoe", HOST="gw1", WAN="rge0", LAN="re0", LANIP="192.168.7.1",
+                                        VLAN="35", USER="jane@isp.example", PASS=password))
+        d = cfg["interfaces"]["dialer1"]
+        self.assertEqual((d["ppp_username"], d["ppp_password"], d["dialer_pool"]), ("jane@isp.example", password, 1))
+        self.assertEqual(cfg["interfaces"]["rge0.35"]["pppoe_pool"], 1)
+        ppp_path = os.path.join(self.real, "etc/ppp/ppp.conf")
+        self.assertEqual(os.stat(ppp_path).st_mode & 0o777, 0o600)
+        ppp = self.read("/etc/ppp/ppp.conf")
+        for line in (" set device PPPoE:rge0_35", ' set authname "jane@isp.example"',
+                     ' set authkey "Pa ss\\"w\\$rd\\\\\\~#?"', " iface name dialer1", " enable dns",
+                     " add! default HISADDR"):
+            self.assertIn(line, ppp)
+        block = self.read("/etc/rc.conf").split("router-cli managed block", 1)[1]
+        for line in ('ppp_enable="YES"', 'ppp_profile="dialer1"', 'ppp_dialer1_unit="1"', 'vlans_rge0="35"',
+                     'ifconfig_rge0_35="up"'):
+            self.assertIn(line, block)
+        self.assertNotIn("defaultrouter", block)
+        self.assertIn("nat on dialer1 inet from 192.168.7.0/24 to any -> (dialer1)", self.read("/etc/pf.conf"))
+
+    def test_quick_setup_rejects_bad_ppp_values(self):
+        for user, pw, vlan in (("jane", "!run-me", ""), ("", "secret", ""), ("jane", "secret", "5000"),
+                               ("ja ne", "secret", "")):
+            env = dict(os.environ, QS_USER=user, QS_PASS=pw, QS_VLAN=vlan)
+            cp = subprocess.run([sys.executable, "-I", QUICK, "check"], capture_output=True, text=True, env=env)
+            self.assertEqual(cp.returncode, 1, (user, pw, vlan))
 
     def test_init_refuses_bad_config_without_writing(self):
         res = self.helper(self.real, "init", {"force": True, "write_files": True,

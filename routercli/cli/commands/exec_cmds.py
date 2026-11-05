@@ -9,7 +9,7 @@ import sys
 import time
 
 from routercli import __version__
-from routercli.backend import paths
+from routercli.backend import paths, render_ppp
 from routercli.backend.render_dnsmasq import pool_ranges
 from routercli.cli import modes as M
 from routercli.cli.commands import registry as R
@@ -117,12 +117,16 @@ def parse_ifconfig(text):
         if line and not line[0].isspace() and ":" in line:
             name = line.split(":", 1)[0]
             flags = re.search(r"<([^>]*)>", line)
-            cur = {"name": name, "flags": (flags.group(1).split(",") if flags else []), "inet": [], "status": ""}
+            mtu = re.search(r"\bmtu (\d+)", line)
+            cur = {"name": name, "flags": (flags.group(1).split(",") if flags else []), "inet": [], "status": "",
+                   "peer": "", "mtu": mtu.group(1) if mtu else ""}
             out.append(cur)
         elif cur is not None:
             parts = line.split()
             if parts and parts[0] == "inet":
                 cur["inet"].append(parts[1])
+                if len(parts) > 3 and parts[2] == "-->" and not cur["peer"]:
+                    cur["peer"] = parts[3]
             elif parts and parts[0] == "status:":
                 cur["status"] = " ".join(parts[1:])
     return out
@@ -142,13 +146,56 @@ def show_ip_int_brief(s, a, neg):
     if not entries:
         entries = [{"name": i.name, "flags": [] if i.shutdown else ["UP"], "inet": [a_.split("/")[0] for a_ in i.ipv4],
                     "status": "unknown"} for i in cfg.sorted_interfaces()]
+    seen = {e["name"] for e in entries}
+    for d in cfg.dialers():            # ppp creates dialer interfaces only while it runs
+        if d.name not in seen:
+            entries.append({"name": d.name, "flags": [], "inet": [], "status": "", "peer": "", "mtu": ""})
     for e in entries:
         itf = cfg.interfaces.get(e["name"])
         method = "DHCP" if itf and itf.dhcp_client else ("manual" if itf and itf.ipv4 else "unset")
         status = "up" if "UP" in e["flags"] else "administratively down"
         proto = "up" if "RUNNING" in e["flags"] or e["status"] in ("active", "") and "UP" in e["flags"] else "down"
+        if itf and itf.is_dialer:
+            method = "IPCP"
+            if not itf.shutdown and "UP" not in e["flags"]:
+                status = "down"
+            if not _pppoe_connected(e):
+                e["inet"], proto = [], "down"
         s.print(f"{e['name']:<16}{(e['inet'][0] if e['inet'] else 'unassigned'):<18}{'YES':<5}{method:<8}"
                 f"{status:<23}{proto}")
+
+
+def _pppoe_connected(e) -> bool:
+    return bool(e["inet"]) and e["inet"][0] != render_ppp.PLACEHOLDER_LOCAL
+
+
+@R.command("show pppoe session", EX, help="PPPoE client sessions (interface dialerN)")
+def show_pppoe_session(s, a, neg):
+    cfg = s.running
+    if not cfg.dialers():
+        s.print("No PPPoE client configured (see 'interface dialer1' in docs/EXAMPLES.md).")
+        return
+    text = s.run_local(["ifconfig", "-a"])
+    entries = {e["name"]: e for e in parse_ifconfig(text)} if not text.startswith("%") else {}
+    s.print(f"{'Interface':<11}{'PPPoE port':<16}{'ppp':<10}{'Session':<9}{'Address':<17}{'Peer':<17}MTU")
+    for d in cfg.dialers():
+        ports = ",".join(p.name for p in cfg.pppoe_ports(d.dialer_pool)) or "-"
+        if d.shutdown:
+            proc = "shutdown"
+        else:
+            pids = s.run_local(["pgrep", "-f", render_ppp.ppp_pattern(d.name)]).strip()
+            proc = "running" if pids and pids[0].isdigit() else "stopped"
+        e = entries.get(d.name)
+        up = bool(e) and _pppoe_connected(e)
+        s.print(f"{d.name:<11}{ports:<16}{proc:<10}{('UP' if up else 'DOWN'):<9}"
+                f"{(e['inet'][0] if up else '-'):<17}{((e['peer'] or '-') if up else '-'):<17}"
+                f"{(e['mtu'] if up else '-')}")
+    s.print("", "Session DOWN while ppp is running = still dialing or login rejected: see 'show pppoe log'.")
+
+
+@R.command("show pppoe log", PR, help="Last 100 lines of the PPP log (/var/log/ppp.log)")
+def show_pppoe_log(s, a, neg):
+    s.helper("ppp-log")
 
 
 @R.command("show ip route", EX, help="IP routing table")
@@ -450,6 +497,26 @@ def clear_ospf(s, a, neg):
 @R.command("clear ip bgp *", PR, help="Reset all BGP sessions")
 def clear_bgp(s, a, neg):
     s.helper("clear-bgp")
+
+
+def _ppp_restart(s, name):
+    res = s.store.call("ppp-restart", name)
+    s.print(res.get("message") if res.get("ok") else f"% {res.get('error')}")
+
+
+@R.command("clear pppoe all", PR, help="Reconnect all PPPoE sessions")
+def clear_pppoe_all(s, a, neg):
+    if not s.running.active_dialers():
+        s.error("% No active PPPoE (dialer) interface")
+    _ppp_restart(s, "all")
+
+
+@R.command("clear interface <ifname:iface>", PR, help="Reset an interface (dialer: reconnect PPPoE)")
+def clear_interface(s, a, neg):
+    itf = s.running.interfaces.get(a["ifname"])
+    if not itf or not itf.is_dialer:
+        s.error("% Only dialer interfaces can be cleared (it reconnects the PPPoE session)")
+    _ppp_restart(s, itf.name)
 
 
 @R.command("clear counters", PR, help="Clear pf rule counters")

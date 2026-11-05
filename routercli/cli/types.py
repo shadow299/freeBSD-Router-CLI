@@ -3,7 +3,7 @@
 import ipaddress
 import re
 
-from routercli.config.model import HOSTNAME_RE, IFACE_RE, MAC_RE, NAME_RE
+from routercli.config.model import HOSTNAME_RE, IFACE_RE, MAC_RE, NAME_RE, PPP_USER_RE, PPPOE_SERVICE_RE
 from routercli.config.showrun import PORT_NAMES
 
 
@@ -133,9 +133,11 @@ class Host(ParamType):
 
 class Iface(ParamType):
     placeholder = "IFNAME"
-    help = "Interface name (re0, em0, igb1, vtnet0, re0.10, lo1 ...)"
+    help = "Interface name (re0, em0, igb1, vtnet0, re0.10, lo1, dialer1 ...)"
 
     def convert(self, token, session):
+        if re.fullmatch(r"[Dd]ialer[0-9]{1,3}", token):     # IOS spelling 'Dialer1'
+            token = token.lower()
         if not IFACE_RE.match(token):
             raise ValueError
         return token
@@ -214,11 +216,31 @@ class Area(ParamType):
         return str(ipaddress.IPv4Address(token))
 
 
+class PppUser(ParamType):
+    placeholder = "USERNAME"
+    help = "PPP user name from your ISP (e.g. user@isp.example)"
+
+    def convert(self, token, session):
+        if not PPP_USER_RE.match(token):
+            raise ValueError
+        return token
+
+
+class PppoeService(ParamType):
+    placeholder = "NAME"
+    help = "PPPoE service name (only if your ISP requires one)"
+
+    def convert(self, token, session):
+        if not PPPOE_SERVICE_RE.match(token):
+            raise ValueError
+        return token
+
+
 TYPES = {
     "word": Word, "line": Line, "int": Int, "ipv4": IPv4, "mask": Mask, "wildcard": Wildcard,
     "ipv4pfx": IPv4Prefix, "ipv6": IPv6, "ipv6pfx": IPv6Prefix, "ip": IPAny, "host": Host,
     "iface": Iface, "mac": Mac, "port": Port, "acl": AclName, "aclnum": AclNumber, "dhcppool": DhcpPoolName,
-    "natpool": NatPoolName, "area": Area,
+    "natpool": NatPoolName, "area": Area, "pppuser": PppUser, "pppoesvc": PppoeService,
 }
 
 

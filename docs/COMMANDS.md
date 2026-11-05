@@ -22,6 +22,7 @@ configuration modes with `do`. Keywords may be abbreviated (`sh ip int br`).
 | `show users` |  | Display information about terminal lines |
 | `show interfaces [<ifname:iface>]` |  | Interface status and configuration |
 | `show ip interface brief` |  | Brief summary of IP status and configuration |
+| `show pppoe session` |  | PPPoE client sessions (interface dialerN) |
 | `show ip route` |  | IP routing table |
 | `show ipv6 route` |  | IPv6 routing table |
 | `show ( arp &#124; ip arp )` |  | ARP table |
@@ -52,6 +53,8 @@ configuration modes with `do`. Keywords may be abbreviated (`sh ip int br`).
 | `show users` |  | Display information about terminal lines |
 | `show interfaces [<ifname:iface>]` |  | Interface status and configuration |
 | `show ip interface brief` |  | Brief summary of IP status and configuration |
+| `show pppoe session` |  | PPPoE client sessions (interface dialerN) |
+| `show pppoe log` |  | Last 100 lines of the PPP log (/var/log/ppp.log) |
 | `show ip route` |  | IP routing table |
 | `show ipv6 route` |  | IPv6 routing table |
 | `show ( arp &#124; ip arp )` |  | ARP table |
@@ -87,6 +90,8 @@ configuration modes with `do`. Keywords may be abbreviated (`sh ip int br`).
 | `clear arp-cache` |  | Clear the entire ARP cache |
 | `clear ip ospf process` |  | Reset OSPF process |
 | `clear ip bgp *` |  | Reset all BGP sessions |
+| `clear pppoe all` |  | Reconnect all PPPoE sessions |
+| `clear interface <ifname:iface>` |  | Reset an interface (dialer: reconnect PPPoE) |
 | `clear counters` |  | Clear pf rule counters |
 | `reload` |  | Halt and perform a cold restart |
 | `show debug-state` |  | (internal) dump session state |
@@ -160,6 +165,20 @@ configuration modes with `do`. Keywords may be abbreviated (`sh ip int br`).
 | `ip nat {role:inside&#124;outside}` | yes | NAT interface commands |
 | `ip access-group <acl:acl> {dir:in&#124;out}` | yes | Specify access control for packets |
 | `no ip access-group {dir:in&#124;out}` | yes |  |
+| `pppoe enable [group global]` | yes | Enable PPPoE on this Ethernet port |
+| `pppoe-client dial-pool-number <pool:int(1-255)> [service-name <svc:pppoesvc>]` | yes | Run a PPPoE client session on this port for the dialer with this pool |
+| `no pppoe-client` | yes |  |
+| `ip address negotiated` | yes | IP address negotiated over PPP (PPPoE) |
+| `encapsulation ppp` |  | Point-to-Point protocol (dialer interfaces) |
+| `dialer pool <pool:int(1-255)>` | yes | Use the PPPoE port(s) of this dial pool |
+| `no dialer pool` | yes |  |
+| `ppp chap hostname <user:pppuser>` | yes | PPP user name (login) from your ISP |
+| `no ppp chap hostname` | yes |  |
+| `ppp chap password ( [0] <pw:line> &#124; 7 <enc:word> )` | yes | PPP password from your ISP (type 'ppp chap password' alone to enter it hidden) |
+| `ppp chap password` | yes | Enter the PPP password without showing it |
+| `ppp pap sent-username <user:pppuser> password ( [0] <pw:line> &#124; 7 <enc:word> )` | yes | PPP user name and password (PAP); same account as 'ppp chap' |
+| `no ppp pap sent-username` | yes |  |
+| `ppp ipcp dns request` | yes | Use the DNS servers the ISP offers |
 
 ## OSPF  (`router(config-router)#`)
 
