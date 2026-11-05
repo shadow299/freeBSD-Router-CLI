@@ -150,6 +150,13 @@ def cmd_init(req: dict) -> dict:
             return {"ok": False, "error": "already initialised (running-config exists)"}
         cfg = RouterConfig.from_dict(req.get("config", {}))
         cfg.validate()
+        if req.get("write_files"):
+            # Installer: render the system files now (no live changes) so the very
+            # first boot already comes up with this configuration.
+            files = apply.render_all(cfg)
+            apply.validate_files(Runner(), files)
+            for path, content in files.items():
+                write_atomic(path, content)
         os.makedirs(paths.ARCHIVE_DIR, exist_ok=True)
         apply.save_config(paths.RUNNING, cfg)
         apply.save_config(paths.STARTUP, cfg)

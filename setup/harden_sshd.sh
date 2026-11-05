@@ -8,6 +8,7 @@
 #   ROOT_LOGIN=no sh setup/harden_sshd.sh                 # root: console only
 #   PASSWORD_AUTH=no sh setup/harden_sshd.sh              # keys only for every account
 #   ALLOW_USERS="router root admin" sh setup/harden_sshd.sh
+#   SSHD_RESTART=no sh setup/harden_sshd.sh               # only write the config (installer chroot)
 #
 # Safe: the candidate file is validated with 'sshd -t' and the effective
 # settings for 'router' are checked with 'sshd -T' before it is installed.
@@ -24,10 +25,14 @@ CONF=/etc/ssh/sshd_config
 ROOT_LOGIN=${ROOT_LOGIN:-yes}
 PASSWORD_AUTH=${PASSWORD_AUTH:-yes}
 ALLOW_USERS=${ALLOW_USERS:-router root}
+SSHD_RESTART=${SSHD_RESTART:-yes}
 B_GLOBAL_BEGIN="# >>> router-cli global >>>"
 B_GLOBAL_END="# <<< router-cli global <<<"
 B_MATCH_BEGIN="# >>> router-cli match >>>"
 B_MATCH_END="# <<< router-cli match <<<"
+
+# A freshly installed system has no host keys until sshd first starts; 'sshd -t' needs them.
+ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1 || ssh-keygen -A >/dev/null
 
 case "$ROOT_LOGIN" in yes|no|prohibit-password) ;; *) die "ROOT_LOGIN must be yes|no|prohibit-password";; esac
 case "$PASSWORD_AUTH" in yes|no) ;; *) die "PASSWORD_AUTH must be yes|no";; esac
@@ -78,7 +83,9 @@ cp -p "$CONF" "$CONF.bak.$(date +%Y%m%d%H%M%S)"
 mv "$new" "$CONF"
 trap - EXIT
 sysrc -q sshd_enable=YES >/dev/null
-if service sshd status >/dev/null 2>&1; then service sshd reload; else service sshd start; fi
+if [ "$SSHD_RESTART" = yes ]; then
+    if service sshd status >/dev/null 2>&1; then service sshd reload; else service sshd start; fi
+fi
 echo "sshd hardened:"
 echo "  root   -> PermitRootLogin $ROOT_LOGIN, PasswordAuthentication $PASSWORD_AUTH, normal shell (/bin/sh)"
 echo "  router -> ForceCommand /usr/local/bin/router-cli (no forwarding, no sftp)"

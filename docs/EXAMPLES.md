@@ -46,6 +46,11 @@ result.
 Your names may differ. `show ip interface brief` lists the real ones, and with the native
 `rge(4)` driver the 2.5G port is called `rge0`.
 
+> **Installed from the router USB image** ([BUILDING_FREEBSD.md](BUILDING_FREEBSD.md))? Then
+> the 2.5G port is `rge0`, so type `rge0` wherever this guide says `re1`. If you answered "yes"
+> to the quick setup, the router already works like the [home router recipe](#7-recipe-a-complete-home-router).
+> Use `show running-config` to see what it configured.
+
 **Words you will meet**
 
 | Word | Meaning |

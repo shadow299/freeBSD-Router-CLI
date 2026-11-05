@@ -32,7 +32,9 @@ class Store:
     # -- privileged operations ---------------------------------------------
     def _helper_argv(self) -> list:
         if self.sandbox:
-            return [sys.executable, "-I", os.path.join(REPO_ROOT, "bin", "router-apply")]
+            local = os.path.join(REPO_ROOT, "bin", "router-apply")
+            # installed copy (/usr/local/lib/router-cli) has no bin/: use the installed helper
+            return [sys.executable, "-I", local if os.path.exists(local) else paths.HELPER]
         if os.geteuid() == 0:                       # root on the console: no doas rule needed
             return [sys.executable, "-I", paths.HELPER]
         return [paths.DOAS, "-n", paths.HELPER]

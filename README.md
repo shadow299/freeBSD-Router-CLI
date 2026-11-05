@@ -31,7 +31,8 @@ edge1#write memory
 | [bin/](bin/) | `router-cli` (login shell) and `router-apply` (privileged backend) launchers |
 | [setup/](setup/) | [install.sh](setup/install.sh), [setup_accounts.sh](setup/setup_accounts.sh), [harden_sshd.sh](setup/harden_sshd.sh) + [sshd_config.router-cli](setup/sshd_config.router-cli), [doas.conf](setup/doas.conf), [rc.d/routercli](setup/rc.d/routercli) |
 | [docs/EXAMPLES.md](docs/EXAMPLES.md) | **Beginner guide with tested examples for every topic** (modes, interfaces, DHCP, DNS, VLANs, NAT, ACLs, routing, rollback, troubleshooting, full recipes) |
-| [docs/BUILDING_FREEBSD.md](docs/BUILDING_FREEBSD.md) | Building FreeBSD 15 from source (custom router kernel, trimmed world, image) |
+| [image/](image/) | Installer image builder: [build-image.sh](image/build-image.sh) (minimal FreeBSD `stable/15` + router-cli + offline packages → `.img`/`.iso` for amd64/arm64), [src.conf](image/src.conf), [installer/](image/installer/) (bsdinstall hook, post-install, quick setup) |
+| [docs/BUILDING_FREEBSD.md](docs/BUILDING_FREEBSD.md) | **Beginner step-by-step guide**: build the installer image, write the USB stick, install the router |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | Full command reference (generated from the grammar) |
 | [tests/](tests/) | End-to-end tests in sandbox mode |
 
@@ -71,7 +72,25 @@ edge1#write memory
   (`enable secret 9 ...`), verified in constant time, 3 attempts per `enable`.
 * Every commit is logged to syslog (`auth.notice`, tag `router-cli`) with the doas user.
 
-## Installation (on the FreeBSD box, as root)
+## Installer image (recommended)
+
+Build a minimal FreeBSD `stable/15` with router-cli preinstalled as a USB/ISO installer that you
+can distribute. Step by step for beginners: [docs/BUILDING_FREEBSD.md](docs/BUILDING_FREEBSD.md).
+
+```sh
+# on a FreeBSD 15 build machine (a VM is fine), as root:
+pkg install -y git-lite
+sh image/build-image.sh            # amd64 (x64)    -> /usr/obj/router-image/images/*.img + *.iso
+sh image/build-image.sh -a arm64   # arm64 (UEFI)
+```
+
+Write the `.img` to a USB stick (dd / Rufus "DD mode" / balenaEtcher), boot the router from it,
+choose **Distribution Sets** in the installer. After FreeBSD is installed the installer installs
+the packages from the stick (no internet needed), asks for the `router` password and the
+`enable secret`, and offers a quick WAN/LAN setup (DHCP WAN + NAT, LAN 192.168.1.1/24 with DHCP
+and DNS).
+
+## Installation on an existing FreeBSD (as root)
 
 ```sh
 pkg install -y git                    # or copy this folder with scp
@@ -90,9 +109,11 @@ from a second terminal.
 keeps a timestamped backup, and only reloads sshd (existing sessions survive).
 
 Options: `NO_PKG=1` (packages pre-installed / offline), `NO_FRR=1` (no dynamic routing),
-`PYVER=312` (default: auto-detect), `REALTEK=auto|yes|no`, `REALTEK_DRIVER=vendor|native`, `REALTEK_JUMBO=1`, `ROOT_LOGIN=yes|prohibit-password|no`
+`PYVER=312` (default: auto-detect), `REALTEK=auto|yes|no`, `REALTEK_DRIVER=auto|vendor|native`, `REALTEK_JUMBO=1`, `ROOT_LOGIN=yes|prohibit-password|no`
 (default `yes`), `PASSWORD_AUTH=yes|no`, `ALLOW_USERS="router root admin"`,
-`FORCE_INIT=1` (re-initialise the config store), `SET_ROOT_PW=1`, `SET_ROUTER_PW=1`.
+`FORCE_INIT=1` (re-initialise the config store), `SET_ROOT_PW=1`, `SET_ROUTER_PW=1`,
+`PKG_REPO_DIR=/path/to/repo` (install packages from an offline pkg repository, e.g. the one
+built by `image/build-image.sh`), `SSHD_RESTART=no` (`harden_sshd.sh`: do not touch the running sshd).
 
 > **Security:** password logins for root are enabled, so do not expose SSH on the WAN side. pf
 > blocks all inbound traffic on `ip nat outside` interfaces by default; if you open port 22 there
@@ -103,7 +124,10 @@ Options: `NO_PKG=1` (packages pre-installed / offline), `NO_FRR=1` (no dynamic r
 
 ### Realtek NICs (RTL8168H + RTL8125B)
 
-Both work after `install.sh`, which detects Realtek NICs with `pciconf` and sets up the Realtek
+Both work after `install.sh`, which detects Realtek NICs with `pciconf`. With
+`REALTEK_DRIVER=auto` (default) it uses FreeBSD's own drivers when the system has `if_rge.ko`
+(**`stable/15`, 15.2 and later, and the installer image**): RTL8168H = `re0`, RTL8125B = `rge0`
+(`if_rge_load="YES"` is added to `/boot/loader.conf`). On older systems it sets up the Realtek
 vendor driver:
 
 * **RTL8168H** (1 GbE, `10ec:8168`) is supported by FreeBSD's built-in `re(4)`, so it works
@@ -119,7 +143,7 @@ vendor driver:
 
   **Reboot once.** The vendor driver then handles both cards as `re0` and `re1` (check with
   `show ip interface brief`; the order follows the PCI bus). With a self-built kernel, build the
-  module with it via `PORTS_MODULES` (see [docs/BUILDING_FREEBSD.md](docs/BUILDING_FREEBSD.md)).
+  module with it via `PORTS_MODULES=net/realtek-re-kmod` in `/etc/make.conf` (see `build(7)`).
 
 Example: 2.5G WAN (DHCP), 1G LAN with a guest VLAN:
 
@@ -158,8 +182,9 @@ sshd -t && service sshd reload
 
 ## FreeBSD 15 compatibility
 
-FreeBSD 15 is the primary target. The following was checked against the `releng/15.1` sources
-and the FreeBSD:15:amd64 package repository:
+FreeBSD 15 is the primary target; the installer image is built from **`stable/15`**. The following
+was checked against the `stable/15` and `releng/15.1` sources and the FreeBSD:15:amd64 package
+repository:
 
 | Area | Status on 15 |
 |---|---|
@@ -168,8 +193,8 @@ and the FreeBSD:15:amd64 package repository:
 | `dhclient` (DHCP client on WAN), `ntpd`, `etcupdate` | still in base |
 | Packages: `python312` + `py312-prompt-toolkit`, `dnsmasq`, `doas`, `frr10`, `realtek-re-kmod` | available; `install.sh` detects the Python flavour |
 | RTL8168H | built-in `re(4)` or vendor driver |
-| RTL8125B | vendor `realtek-re-kmod` (default), or native `rge(4)` on stable/15 / 15.2+ (`REALTEK_DRIVER=native`; the interface is then `rge0`) |
-| pkgbase installs ("Packages (Tech Preview)") | supported; see BUILDING_FREEBSD.md §5b |
+| RTL8125B | native `rge(4)` = `rge0` on stable/15 / 15.2+ (default there), vendor `realtek-re-kmod` on 15.0/15.1 (`re1`) |
+| pkgbase installs ("Packages (Tech Preview)") | supported; see BUILDING_FREEBSD.md Appendix C |
 
 ## Using the CLI
 
@@ -254,7 +279,7 @@ mkdir -p $ROUTERCLI_SANDBOX/etc && touch $ROUTERCLI_SANDBOX/etc/rc.conf
 python3 -c 'import sys,json;sys.path.insert(0,".");from routercli.auth import hash_secret;print(json.dumps({"config":{"hostname":"r1","enable_secret":hash_secret("cisco123")}}))' \
   | python3 -I bin/router-apply init
 .venv/bin/python -I bin/router-cli                  # interactive; enable secret: cisco123
-python3 -m unittest discover -s tests -v             # test suite
+python3 -m unittest discover -s tests -v             # test suite (CLI, EXAMPLES.md, image/installer scripts)
 python3 tools/gen_command_reference.py               # refresh docs/COMMANDS.md
 ```
 
@@ -273,5 +298,8 @@ Rendered files land in `$ROUTERCLI_SANDBOX/etc/...`; commands that would have ru
   resolv.conf at commit time.
 * `realtek-re-kmod` from pkg comes from the kmods repository and is built for the installed
   minor release (e.g. 15.1). That works with a self-built kernel of the same `releng` branch,
-  but rebuilding it with `PORTS_MODULES` is the safe choice.
+  but rebuilding it with `PORTS_MODULES` is the safe choice. On `stable/15` the native `rge` is
+  used instead, so this does not apply to the installer image.
+* `freebsd-update` does not work on `stable/15` systems; update by installing a newer image
+  (see BUILDING_FREEBSD.md Part 7).
 * Verify on your FreeBSD release: FRR package name (`pkg search frr`), `vtysh -C` syntax checking.

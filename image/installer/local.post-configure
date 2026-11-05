@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# /usr/libexec/bsdinstall/local.post-configure  (on the installer USB stick / ISO)
+#
+# bsdinstall runs this hook after the FreeBSD base system has been installed
+# and configured, with the new system mounted at $1 (normally /mnt). It copies
+# the router software and its offline package repository into the new system
+# and runs postinstall.sh there (chrooted), which installs everything and asks
+# for the router passwords.
+#
+CHROOT=${1:-${BSDINSTALL_CHROOT:-/mnt}}
+PAYLOAD=/usr/freebsd-router
+WORK=/var/tmp/router-install
+
+clear
+echo "============================================================"
+echo "  Installing the router software"
+echo "============================================================"
+
+if [ ! -d "$PAYLOAD/router-cli" ] || [ ! -d "$CHROOT/etc" ]; then
+    echo "ERROR: router payload ($PAYLOAD) or new system ($CHROOT) not found."
+    printf "Press Enter to continue without the router software... "; read -r _
+    exit 1
+fi
+
+# The RTL8125 (rge) driver is a module: make sure the installer sees that NIC
+# too, so the interface list offered by the quick setup is complete.
+kldstat -q -m pci/rge 2>/dev/null || kldload -n if_rge 2>/dev/null || true
+
+rm -rf "$CHROOT$WORK"
+mkdir -p "$CHROOT$WORK"
+cp -R "$PAYLOAD/." "$CHROOT$WORK/"
+
+until chroot "$CHROOT" /bin/sh "$WORK/router-cli/image/installer/postinstall.sh" "$WORK"; do
+    echo
+    echo "The router software setup did not finish (see the messages above)."
+    printf "Try again? [Y/n] "; read -r ans
+    case "$ans" in [Nn]*) break ;; esac
+done
+
+rm -rf "$CHROOT$WORK"
+exit 0

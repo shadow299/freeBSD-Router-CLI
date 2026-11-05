@@ -105,7 +105,8 @@ if [ -f /var/db/router-cli/running-config.json ] && [ -z "${FORCE_INIT:-}" ]; th
 else
     msg "Setting the privileged-EXEC 'enable secret'"
     read_secret "enable secret" ENABLE_SECRET
-    host=$(hostname -s 2>/dev/null || echo router)
+    host=${ROUTER_HOSTNAME:-$(hostname -s 2>/dev/null || echo router)}
+    host=${host%%.*}
     # Secret goes via stdin (never argv / environment); hashed with scrypt.
     printf '%s' "$ENABLE_SECRET" | "$PY" -I -c '
 import json, sys

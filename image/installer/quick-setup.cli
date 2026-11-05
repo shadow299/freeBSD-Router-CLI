@@ -1,0 +1,35 @@
+! quick-setup.cli - the configuration the installer's "quick setup" applies.
+! postinstall.sh fills in the @...@ placeholders (host name, WAN/LAN ports,
+! LAN address, LAN network) and feeds this to router-cli. It is the "complete
+! home router" recipe from docs/EXAMPLES.md section 7; edit it before building
+! the image to change what the quick setup does.
+configure terminal
+hostname @HOST@
+!
+interface @WAN@
+ description WAN
+ ip address dhcp
+ ip nat outside
+ exit
+!
+interface @LAN@
+ description LAN
+ ip address @LANIP@ 255.255.255.0
+ ip nat inside
+ exit
+!
+access-list 1 permit @NET@.0 0.0.0.255
+ip nat inside source list 1 interface @WAN@ overload
+!
+ip dhcp excluded-address @NET@.1 @NET@.49
+ip dhcp excluded-address @LANIP@
+ip dhcp pool LAN
+ network @NET@.0 255.255.255.0
+ default-router @LANIP@
+ dns-server @LANIP@
+ exit
+!
+ip dns server
+!
+commit comment quick setup by the installer
+end

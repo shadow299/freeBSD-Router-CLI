@@ -4,6 +4,9 @@
 #
 #   sh setup/install.sh            # install packages + router-cli
 #   NO_PKG=1 sh setup/install.sh   # skip pkg(8) (offline / packages pre-installed)
+#   PKG_REPO_DIR=/path sh setup/install.sh
+#                                  # install from a local package repository (made with
+#                                  #  'pkg repo'); no network needed - used by the installer image
 #   NO_FRR=1 sh setup/install.sh   # skip FRR (no OSPF/RIP/BGP support)
 #   PYVER=312 sh setup/install.sh  # python flavour (default: the ports default
 #                                  #  python - 3.11 on older 14.x, 3.12 on 15.x)
@@ -59,6 +62,29 @@ detect_pyver() {
     ls -r /usr/local/bin/python3.[0-9]* 2>/dev/null | grep -E 'python3\.[0-9]+$' | head -1 | sed 's/.*python3\./3/'
 }
 
+# --------------------------------------------------------------------------
+# Offline mode: use ONLY the local repository in $PKG_REPO_DIR. pkg itself is
+# bootstrapped from the pkg-*.pkg file in that repository.
+if [ -n "${PKG_REPO_DIR:-}" ] && [ -z "${NO_PKG:-}" ]; then
+    [ -d "$PKG_REPO_DIR" ] || die "PKG_REPO_DIR $PKG_REPO_DIR is not a directory"
+    PKG_REPO_DIR=$(cd "$PKG_REPO_DIR" && pwd)
+    REPOCONF=$(mktemp -d /tmp/router-repos.XXXXXX)
+    printf 'ROUTER_OFFLINE: { url: "file://%s", signature_type: "none", enabled: yes }\n' \
+        "$PKG_REPO_DIR" > "$REPOCONF/router-offline.conf"
+    if ! command pkg -N >/dev/null 2>&1; then
+        msg "Bootstrapping pkg from $PKG_REPO_DIR"
+        pkgfile=$(find "$PKG_REPO_DIR" -name 'pkg-[0-9]*.pkg' | head -1)
+        [ -n "$pkgfile" ] || die "no pkg-*.pkg in $PKG_REPO_DIR"
+        bs=$(mktemp -d /tmp/pkg-bootstrap.XXXXXX)
+        tar -xf "$pkgfile" -C "$bs" --include '*sbin/pkg-static'
+        pkgstatic=$(find "$bs" -name pkg-static -type f | head -1)
+        [ -n "$pkgstatic" ] || die "pkg-static not found in $pkgfile"
+        "$pkgstatic" add "$pkgfile"
+        rm -rf "$bs"
+    fi
+    pkg() { command pkg -o REPOS_DIR="$REPOCONF" -o IGNORE_OSVERSION=yes "$@"; }
+fi
+
 msg "Installing packages"
 if [ -z "${NO_PKG:-}" ]; then
     pkg -N >/dev/null 2>&1 || env ASSUME_ALWAYS_YES=yes pkg bootstrap -y
@@ -81,6 +107,9 @@ if [ -z "${NO_PKG:-}" ]; then
     fi
 fi
 [ -x "$PY" ] || die "$PY not found (install python${PYVER} or set PYVER)"
+if [ -n "${REPOCONF:-}" ]; then
+    pkg clean -a -y >/dev/null 2>&1 || true
+fi
 
 # --------------------------------------------------------------------------
 # Realtek NICs.
@@ -88,16 +117,22 @@ fi
 #  * RTL8125/8125B (2.5GbE, PCI 10ec:8125): NOT supported by re(4). Options:
 #     - vendor : Realtek's driver from ports, net/realtek-re-kmod (14.x + 15.x).
 #                Probes with higher priority than the built-in drivers, so it
-#                drives every Realtek card: re0, re1, ...  (default)
-#     - native : the new rge(4) driver (if_rge.ko; only in stable/15 today, expected in 15.2).
+#                drives every Realtek card: re0, re1, ...
+#     - native : the new rge(4) driver (if_rge.ko; in stable/15 and 15.2+). Default
+#                when present - nothing extra to install.
 #                RTL8168H stays on re(4) as re0, the RTL8125B becomes rge0.
 #   REALTEK=auto (default: only if a Realtek NIC is present) | yes | no
-#   REALTEK_DRIVER=vendor (default) | native
+#   REALTEK_DRIVER=auto (default: native if this kernel has if_rge.ko, else vendor)
+#                | vendor | native
 #   REALTEK_JUMBO=1   keep the vendor driver's large RX buffers (jumbo frames)
 # --------------------------------------------------------------------------
 REALTEK=${REALTEK:-auto}
-REALTEK_DRIVER=${REALTEK_DRIVER:-vendor}
-case "$REALTEK_DRIVER" in vendor|native) ;; *) die "REALTEK_DRIVER must be vendor|native";; esac
+REALTEK_DRIVER=${REALTEK_DRIVER:-auto}
+case "$REALTEK_DRIVER" in
+    auto) if [ -f /boot/kernel/if_rge.ko ]; then REALTEK_DRIVER=native; else REALTEK_DRIVER=vendor; fi ;;
+    vendor|native) ;;
+    *) die "REALTEK_DRIVER must be auto|vendor|native";;
+esac
 realtek_nics=$(pciconf -l 2>/dev/null | grep -Ei 'vendor=0x10ec' | grep -Ei 'device=0x(8125|8126|8168|8161|8136)' || true)
 LOADER=/boot/loader.conf
 
@@ -207,6 +242,8 @@ sysrc -q kld_list+="pf pflog if_vlan" >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------
 grep -qxF /usr/local/bin/router-cli /etc/shells || echo /usr/local/bin/router-cli >> /etc/shells
+
+if [ -n "${REPOCONF:-}" ]; then rm -rf "$REPOCONF"; fi
 
 msg "Done. Next steps:"
 echo "    sh $SRC/setup/setup_accounts.sh     # create 'router' user, enable secret"
