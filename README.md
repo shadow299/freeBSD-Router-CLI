@@ -30,6 +30,7 @@ edge1#write memory
 | [routercli/backend/](routercli/backend/) | Translation engine: renderers for rc.conf / pf.conf / dnsmasq.conf / frr.conf / ntp.conf / resolv.conf, [apply.py](routercli/backend/apply.py) transactional commit, [helper.py](routercli/backend/helper.py) root entry point |
 | [bin/](bin/) | `router-cli` (login shell) and `router-apply` (privileged backend) launchers |
 | [setup/](setup/) | [install.sh](setup/install.sh), [setup_accounts.sh](setup/setup_accounts.sh), [harden_sshd.sh](setup/harden_sshd.sh) + [sshd_config.router-cli](setup/sshd_config.router-cli), [doas.conf](setup/doas.conf), [rc.d/routercli](setup/rc.d/routercli) |
+| [docs/EXAMPLES.md](docs/EXAMPLES.md) | **Beginner guide with tested examples for every topic** (modes, interfaces, DHCP, DNS, VLANs, NAT, ACLs, routing, rollback, troubleshooting, full recipes) |
 | [docs/BUILDING_FREEBSD.md](docs/BUILDING_FREEBSD.md) | Building FreeBSD 15 from source (custom router kernel, trimmed world, image) |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | Full command reference (generated from the grammar) |
 | [tests/](tests/) | End-to-end tests in sandbox mode |

@@ -33,6 +33,8 @@ class Store:
     def _helper_argv(self) -> list:
         if self.sandbox:
             return [sys.executable, "-I", os.path.join(REPO_ROOT, "bin", "router-apply")]
+        if os.geteuid() == 0:                       # root on the console: no doas rule needed
+            return [sys.executable, "-I", paths.HELPER]
         return [paths.DOAS, "-n", paths.HELPER]
 
     def call(self, op: str, *args, payload=None, timeout=300) -> dict:

@@ -1,6 +1,7 @@
 """Interactive session and REPL."""
 
 import difflib
+from dataclasses import asdict
 import getpass
 import os
 import re
@@ -18,7 +19,7 @@ from routercli.cli import modes as M
 from routercli.cli.commands import registry
 from routercli.cli.parser import ParseError, match, options
 from routercli.config import showrun
-from routercli.config.model import ConfigError
+from routercli.config.model import ConfigError, Interface
 from routercli.config.store import Store
 
 FILTERS = ("include", "exclude", "begin", "count", "section")
@@ -72,8 +73,19 @@ class Session:
     def candidate_or_running(self):
         return self.candidate if self.candidate is not None else self.running
 
+    def without_untouched(self, cfg):
+        """Copy of cfg minus interfaces that were only entered ('interface re0' + exit) and
+        are not in the running config: they carry no settings, and committing them would
+        replace an existing rc.conf line for that port with a bare 'up'."""
+        cfg = cfg.copy()
+        for name, itf in list(cfg.interfaces.items()):
+            if name not in self.running.interfaces and asdict(itf) == asdict(Interface(name=name)):
+                del cfg.interfaces[name]
+        return cfg
+
     def dirty(self) -> bool:
-        return self.candidate is not None and self.candidate.to_dict() != self.running.to_dict()
+        return (self.candidate is not None
+                and self.without_untouched(self.candidate).to_dict() != self.running.to_dict())
 
     def refresh(self):
         self.running = self.store.running()
@@ -176,7 +188,7 @@ class Session:
         self.error("% Bad secrets")
 
     def commit(self, comment="", confirm_minutes=None, force=False):
-        cfg = self.candidate_or_running()
+        cfg = self.without_untouched(self.candidate_or_running())
         try:
             warnings = cfg.copy().validate()
         except ConfigError as exc:
@@ -430,6 +442,9 @@ def loop_prompt_toolkit(s: Session):
     def _(event):
         buf = event.app.current_buffer
         text = buf.document.text_before_cursor
+        if text.lstrip().startswith("!"):
+            buf.insert_text("?")
+            return
         msg = s.help_text(text)
         run_in_terminal(lambda: print(f"{s.prompt()}{text}?\n{msg}"))
 
@@ -482,7 +497,7 @@ def loop_readline(s: Session):
         except EOFError:
             print()
             break
-        if line.rstrip().endswith("?"):
+        if line.rstrip().endswith("?") and not line.lstrip().startswith("!"):
             print(s.help_text(line.rstrip()[:-1]))
             continue
         s.execute(line)
@@ -498,7 +513,7 @@ def loop_script(s: Session, lines):
         if s.quit:
             break
         print(f"{s.prompt()}{line.rstrip()}")
-        if line.rstrip().endswith("?"):
+        if line.rstrip().endswith("?") and not line.lstrip().startswith("!"):
             print(s.help_text(line.rstrip()[:-1]))
             continue
         s.execute(line)

@@ -69,6 +69,11 @@ def banner(s, a, neg):
     s.cfg.banner_motd = text.replace("\\n", "\n")
 
 
+@R.command("banner motd", CF, no_only=True)
+def no_banner(s, a, neg):
+    s.cfg.banner_motd = ""
+
+
 @R.command("ip routing", CF, help="Enable IP routing (packet forwarding)", no=True)
 def ip_routing(s, a, neg):
     s.cfg.ip_routing = not neg
@@ -92,7 +97,7 @@ def name_server(s, a, neg):
         s.error("% Maximum of 6 name servers")
 
 
-@R.command("no ip name-server", CF, no_only=True)
+@R.command("ip name-server", CF, no_only=True)
 def no_name_server_all(s, a, neg):
     s.cfg.name_servers = []
 

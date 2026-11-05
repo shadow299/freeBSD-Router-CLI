@@ -114,6 +114,21 @@ class TestEndToEnd(SandboxCase):
         self.assertIn("neighbor 192.0.2.1 remote-as 65001", frr)
         self.assertIn('frr_daemons="zebra staticd ospfd bgpd"', self.read("etc/rc.conf"))
 
+    def test_9_no_forms_and_untouched_interfaces(self):
+        self.cli("configure terminal", "banner motd Hello", "ip name-server 1.1.1.1 9.9.9.9", "commit", "end")
+        out = self.cli("configure terminal", "! comment ending in a question?", "interface em2", "exit",
+                       "show configuration changes", "no banner motd", "no ip name-server", "commit", "end",
+                       "show running-config")
+        self.assertNotIn("%", out)
+        self.assertIn("No differences.", out)
+        run = out.split("#show running-config", 1)[1]
+        self.assertNotIn("banner motd", run)
+        self.assertNotIn("ip name-server", run)
+        self.assertNotIn("interface em2", run)
+        self.assertNotIn("ifconfig_em2", self.read("etc/rc.conf"))
+        out = self.cli("configure terminal", "interface em2", "end")
+        self.assertNotIn("Uncommitted", out)
+
     def test_8_realtek_offload(self):
         out = self.cli("configure terminal",
                        "interface re1", "description WAN 2.5G", "ip address dhcp", "no hardware-offload",

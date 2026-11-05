@@ -246,7 +246,7 @@ def show_candidate(s, a, neg):
 
 @R.command("show configuration changes", COMMIT_MODES, help="Diff between running and candidate configuration")
 def show_changes(s, a, neg):
-    s.print(s.diff_text(s.running, s.candidate_or_running()))
+    s.print(s.diff_text(s.running, s.without_untouched(s.candidate_or_running())))
 
 
 @R.command("show archive", PR, help="Committed configuration history")

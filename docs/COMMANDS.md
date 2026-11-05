@@ -105,10 +105,11 @@ configuration modes with `do`. Keywords may be abbreviated (`sh ip int br`).
 | `( ip domain-name &#124; ip domain name ) <domain:word>` | yes | Define the default domain name |
 | `enable secret ( [0] <password:line> &#124; 9 <hash:line> )` | yes | Assign the privileged level secret |
 | `banner motd <text:line>` | yes | Set message of the day banner |
+| `no banner motd` | yes |  |
 | `ip routing` | yes | Enable IP routing (packet forwarding) |
 | `ipv6 unicast-routing` | yes | Enable IPv6 unicast routing |
 | `ip name-server <a:ip> [<b:ip> [<c:ip>]]` | yes | Specify address of name server to use |
-| `no no ip name-server` | yes |  |
+| `no ip name-server` | yes |  |
 | `ip dns server` | yes | Enable the DNS forwarder (dnsmasq) |
 | `ip host <name:word> <addr:ip>` | yes | Add an entry to the ip hostname table |
 | `no ip host <name:word>` | yes |  |
