@@ -24,8 +24,16 @@
 #
 set -eu
 
+# bsdinstall's chroot may inherit a base-only PATH without ports executables.
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+export PATH
+
 die() { echo "install.sh: $*" >&2; exit 1; }
-msg() { echo "==> $*"; }
+INSTALL_STAGE="initial checks"
+msg() { INSTALL_STAGE=$*; echo "==> $*"; }
+trap 'status=$?; if [ "$status" -ne 0 ]; then
+    printf "\ninstall.sh: FAILED during %s (exit status %s)\n" "$INSTALL_STAGE" "$status" >&2
+fi' EXIT
 
 [ "$(id -u)" -eq 0 ] || die "must be run as root"
 [ "$(uname -s)" = "FreeBSD" ] || die "this installer targets FreeBSD"
@@ -139,6 +147,28 @@ esac
 realtek_nics=$(pciconf -l 2>/dev/null | grep -Ei 'vendor=0x10ec' | grep -Ei 'device=0x(8125|8126|8168|8161|8136)' || true)
 LOADER=/boot/loader.conf
 
+# sysrc accepts shell variable names, not dotted loader tunables.
+loader_tunable() (
+    key=$1
+    value=$2
+    touch "$LOADER" || die "cannot access $LOADER"
+    tmp=$(mktemp "$LOADER.XXXXXX") || die "cannot create loader configuration temporary file"
+    trap 'rm -f "$tmp"' EXIT
+    cp -p "$LOADER" "$tmp" || die "cannot preserve loader configuration permissions"
+    awk -v key="$key" '
+        {
+            lhs = $0
+            sub(/=.*/, "", lhs)
+            gsub(/[ \t]/, "", lhs)
+            if (lhs != key) print
+        }
+    ' "$LOADER" > "$tmp" || die "cannot read loader configuration"
+    if [ -n "$value" ]; then
+        printf '%s="%s"\n' "$key" "$value" >> "$tmp" || die "cannot write loader tunable $key"
+    fi
+    mv -f "$tmp" "$LOADER" || die "cannot replace $LOADER"
+)
+
 realtek_vendor() {
     if [ ! -f /boot/modules/if_re.ko ]; then
         if [ -z "${NO_PKG:-}" ]; then
@@ -151,9 +181,9 @@ realtek_vendor() {
     # Smaller RX buffers avoid driver hangs on fragmented memory (pkg-message);
     # 2048 still fits a full 1500-byte frame + VLAN tag. Jumbo frames need REALTEK_JUMBO=1.
     if [ -z "${REALTEK_JUMBO:-}" ]; then
-        sysrc -f $LOADER hw.re.max_rx_mbuf_sz=2048 >/dev/null
+        loader_tunable hw.re.max_rx_mbuf_sz 2048
     else
-        sysrc -f $LOADER -x hw.re.max_rx_mbuf_sz >/dev/null 2>&1 || true
+        loader_tunable hw.re.max_rx_mbuf_sz ""
     fi
     if kldstat -q -m pci/if_re 2>/dev/null; then      # vendor module registers pci/if_re (built-in: pci/re)
         echo "    vendor re driver already active"
@@ -165,7 +195,8 @@ realtek_vendor() {
 
 realtek_native() {
     [ -f /boot/kernel/if_rge.ko ] || return 1
-    sysrc -f $LOADER -x if_re_load if_re_name hw.re.max_rx_mbuf_sz >/dev/null 2>&1 || true
+    sysrc -f $LOADER -x if_re_load if_re_name >/dev/null 2>&1 || true
+    loader_tunable hw.re.max_rx_mbuf_sz ""
     sysrc -f $LOADER if_rge_load=YES >/dev/null
     kldload -n if_rge 2>/dev/null || true
     echo "    native rge(4) enabled: RTL8125B = rge0, RTL8168H = re0 (check: ifconfig -l)"
@@ -222,18 +253,24 @@ mkdir -p /usr/local/etc/frr
 
 # --------------------------------------------------------------------------
 msg "Configuring doas ($DOAS_CONF)"
-touch "$DOAS_CONF"
+touch "$DOAS_CONF" || die "cannot create or access $DOAS_CONF"
 if ! grep -qxF "$DOAS_RULE" "$DOAS_CONF"; then
-    cp -p "$DOAS_CONF" "$DOAS_CONF.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$DOAS_CONF" "$DOAS_CONF.bak.$(date +%Y%m%d%H%M%S)" || \
+        die "cannot back up $DOAS_CONF"
     {
         echo "# router-cli: the 'router' account may run ONLY the config backend as root."
         echo "# The environment is reset by doas (no keepenv), arguments are validated by the helper."
         echo "$DOAS_RULE"
-    } >> "$DOAS_CONF"
+    } >> "$DOAS_CONF" || die "cannot append the router backend rule to $DOAS_CONF"
 fi
-chown root:wheel "$DOAS_CONF"
-chmod 0600 "$DOAS_CONF"
-doas -C "$DOAS_CONF" || die "doas.conf failed validation"
+chown root:wheel "$DOAS_CONF" || die "cannot set root:wheel ownership on $DOAS_CONF"
+chmod 0600 "$DOAS_CONF" || die "cannot set mode 0600 on $DOAS_CONF"
+if doas -C "$DOAS_CONF"; then
+    echo "    doas.conf syntax validated"
+else
+    status=$?
+    die "doas -C $DOAS_CONF failed (exit status $status); configuration validation was not bypassed"
+fi
 
 # --------------------------------------------------------------------------
 msg "Installing rc.d script"
@@ -258,13 +295,15 @@ sed -i '' '/^net\.isr\.dispatch=/d' "$SYSCTL_CONF"
 if [ "$NETISR_TUNING" = yes ]; then
     ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
     msg "netisr: deferred dispatch, $ncpu worker threads bound to the CPU cores"
-    sysrc -f $LOADER net.isr.maxthreads="$ncpu" net.isr.bindthreads=1 >/dev/null
+    loader_tunable net.isr.maxthreads "$ncpu"
+    loader_tunable net.isr.bindthreads 1
     echo "net.isr.dispatch=deferred" >> "$SYSCTL_CONF"
     sysctl net.isr.dispatch=deferred >/dev/null 2>&1 || true
     echo "    $LOADER: net.isr.maxthreads=$ncpu net.isr.bindthreads=1 (active after reboot)"
     echo "    $SYSCTL_CONF: net.isr.dispatch=deferred"
 else
-    sysrc -f $LOADER -x net.isr.maxthreads net.isr.bindthreads >/dev/null 2>&1 || true
+    loader_tunable net.isr.maxthreads ""
+    loader_tunable net.isr.bindthreads ""
 fi
 
 # --------------------------------------------------------------------------
