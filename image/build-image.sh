@@ -73,18 +73,55 @@ step() { STEP=$((STEP + 1)); printf '\n[%s/8] %s\n' "$STEP" "$*"; }
 info() { printf '      %s\n' "$*"; }
 die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
-# run NAME CMD... : run a long command with its output in a log file
-run() {
+# Stream output and keep a log, preserving the command's status on POSIX sh
+# (a pipeline otherwise reports only tee's exit status).
+run() (
     name=$1; shift
     log=$LOGDIR/$ARCH-$name.log
-    info "log: $log   (watch it live: tail -f $log)"
+    info "live output below; saved to $log"
+    status_file=$(mktemp) || die "cannot create command status file"
+    trap 'rm -f "$status_file"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
     start=$(date +%s)
-    if ! "$@" > "$log" 2>&1; then
-        echo "------ last 40 lines of $log ------" >&2
-        tail -n 40 "$log" >&2
+    tee_status=0
+    {
+        command_status=0
+        "$@" || command_status=$?
+        printf '%s\n' "$command_status" > "$status_file"
+    } 2>&1 | tee "$log" || tee_status=$?
+    [ "$tee_status" -eq 0 ] || die "cannot stream or save output to $log"
+    command_status=$(cat "$status_file")
+    [ -n "$command_status" ] || die "step '$name' ended without reporting its status - see $log"
+    if [ "$command_status" -ne 0 ]; then
         die "step '$name' failed - see $log (docs/BUILDING_FREEBSD.md: 'When something goes wrong')"
     fi
     info "done in $(( ($(date +%s) - start) / 60 )) min"
+)
+
+# Force progress into the log even though stderr is not a terminal. Abort an
+# HTTP transfer stalled below 1 KiB/s for two minutes instead of waiting forever.
+fetch_source() {
+    printf 'Fetching %s from %s\n' "$BRANCH" "$GIT_URL"
+    git -C "$SRC" -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=120 \
+        fetch --progress --depth 1 "$GIT_URL" "$BRANCH"
+}
+
+checkout_source() {
+    echo "Download complete; checking out the source files..."
+    git -C "$SRC" -c advice.detachedHead=false checkout --progress -B "$BRANCH" FETCH_HEAD
+}
+
+download_source() {
+    git -C "$SRC" init -q || return
+    git -C "$SRC" remote add origin "$GIT_URL" || return
+    fetch_source || return
+    checkout_source
+}
+
+update_source() {
+    fetch_source || return
+    checkout_source
 }
 
 # Everything the FreeBSD build needs, passed to every make call. The build
@@ -116,8 +153,8 @@ info "building: $BRANCH for $ARCH ($TARGET/$TARGET_ARCH), kernel $KERNCONF"
 step "Getting the FreeBSD source code ($BRANCH) into $SRC"
 if [ -d "$SRC/.git" ]; then
     if [ -z "$NO_UPDATE" ]; then
-        info "updating the existing checkout"
-        run git-update sh -c "git -C '$SRC' fetch --depth 1 origin '$BRANCH' && git -C '$SRC' checkout -q -B '$BRANCH' FETCH_HEAD"
+        info "updating the existing checkout from $GIT_URL"
+        run git-update update_source
     fi
 else
     # /usr/src is often a mount point that cannot be removed ("Device busy"): the
@@ -138,8 +175,7 @@ else
        or build from another directory:  sh image/build-image.sh -s /home/src"
     fi
     info "downloading from $GIT_URL (about 1 GB, 5-20 minutes)"
-    run git-clone sh -c "git -C '$SRC' init -q && git -C '$SRC' remote add origin '$GIT_URL' && \
-        git -C '$SRC' fetch --depth 1 origin '$BRANCH' && git -C '$SRC' checkout -q -B '$BRANCH' FETCH_HEAD"
+    run git-clone download_source
 fi
 [ -f "$SRC/sys/conf/newvers.sh" ] || die "$SRC does not look like FreeBSD source code"
 REVISION=$(sed -n 's/^REVISION="\(.*\)"/\1/p' "$SRC/sys/conf/newvers.sh")

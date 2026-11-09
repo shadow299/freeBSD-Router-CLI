@@ -204,13 +204,12 @@ The script prints 8 steps. Expected output (shortened):
       ...
 [3/8] Building the FreeBSD base system (buildworld)
       this is the long part: about 1-3 hours on a 4-8 core PC (more for arm64)
-      log: /usr/obj/router-image/logs/amd64-buildworld.log   (watch it live: tail -f ...)
+      live output below; saved to /usr/obj/router-image/logs/amd64-buildworld.log
 ```
 
-While it seems to do nothing, it is working. To watch, open a second tmux window (press
-`Ctrl+b`, then `c`) and run the `tail -f ...` command it shows. Press `Ctrl+c` to stop
-*watching*; this does not stop the build. Switch back to the first window with `Ctrl+b`, then
-`0`.
+Download progress and build output appear directly on this screen. The same output is
+saved to the displayed log file for troubleshooting; you do not need a second window
+or `tail -f`. Pressing `Ctrl+c` on this screen interrupts the build.
 
 | Step | What happens | Typical time (8 cores) |
 |---|---|---|
@@ -494,7 +493,7 @@ RELEASE versions. Always update FreeBSD itself with a new image.
 
 ## When something goes wrong
 
-The script stops with `ERROR:` and shows the last 40 lines of the log. The full logs are in
+The script stops with `ERROR:` after showing the command output live. The full logs are in
 `/usr/obj/router-image/logs/`.
 
 | Message / problem | Fix |
@@ -510,7 +509,7 @@ The script stops with `ERROR:` and shows the last 40 lines of the log. The full 
 | step `buildworld` failed with `Killed` or `out of swap` | Not enough memory: run again with `-j 2`. |
 | step `buildworld` failed otherwise | Often a broken source update. Run with `-f` (full rebuild). If it still fails, wait a day: `stable/15` is fixed quickly. Or use the previous source: `cd /usr/src && git log --oneline -3`. |
 | step `pkg-update` / `pkg-fetch` failed | Internet problem, or a package is temporarily missing for this architecture. Run again later. |
-| build seems stuck | Run `tail -f` on the log shown. If new lines appear, it is working. `top` shows `cc`/`ld` working. |
+| build seems stuck | Watch the live output on the script screen. Some commands can be quiet while working; use `top` in another terminal to check for `cc`/`ld` activity. Git downloads show progress; HTTP transfers below 1 KiB/s for two minutes abort with an error. During the download, source data is in hidden `/usr/src/.git`; source files appear after checkout. |
 | Router does not boot from the stick | Boot menu key, disable Secure Boot, try another USB port. Write the stick again, using DD mode in Rufus. |
 | Installer: "Distribution Sets" or "Packages"? | **Distribution Sets**. |
 | Router setup stops with an error | It offers `Try again? [Y/n]`. If it fails again, answer `n`: FreeBSD itself is installed. After the reboot, log in as root and run `sh /usr/local/share/router-cli/setup/install.sh` and `setup_accounts.sh`, or simply reinstall. |
