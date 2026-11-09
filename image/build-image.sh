@@ -14,8 +14,8 @@
 #   -s DIR      FreeBSD source directory (default: /usr/src)
 #   -o DIR      output directory (default: /usr/obj/router-image)
 #   (set MAKEOBJDIRPREFIX=/bigdisk/obj to build somewhere else than /usr/obj;
-#    set GIT_URL=https://github.com/freebsd/freebsd-src.git to download the
-#    source from the GitHub mirror if git.FreeBSD.org is slow or unreachable)
+#    source downloads default to https://github.com/freebsd/freebsd-src.git;
+#    set GIT_URL to override the source repository)
 #   -j N        parallel build jobs (default: number of CPUs)
 #   -k NAME     kernel configuration (default: GENERIC)
 #   -n          no FRR (no OSPF/RIP/BGP; saves ~30 MB)
@@ -48,7 +48,7 @@ KERNCONF=GENERIC
 NO_FRR=""
 NO_UPDATE=""
 FORCE=""
-GIT_URL=${GIT_URL:-https://git.FreeBSD.org/src.git}
+GIT_URL=${GIT_URL:-https://github.com/freebsd/freebsd-src.git}
 
 usage() { sed -n '2,/^set -eu/p' "$0" | sed -e '/^set -eu/d' -e 's/^#//' -e 's/^ //'; exit "${1:-0}"; }
 while getopts a:b:s:o:j:k:nufh opt; do

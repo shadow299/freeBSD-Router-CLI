@@ -505,7 +505,7 @@ The script stops with `ERROR:` after showing the command output live. The full l
 | `only N GB free` | Give the VM a bigger disk, or delete old builds: `rm -rf /usr/obj/usr` |
 | `/usr/src exists and is not empty` although it is empty, and `rm -r /usr/src` says `Device busy` | Fixed in the current `build-image.sh`: copy the new project version to the build machine and run again. (The "Auto (ZFS)" install makes `/usr/src` a separate ZFS dataset, `zroot/usr/src`, so the directory is a mount point that cannot be deleted - and does not need to be: the script now downloads into it.) |
 | `/usr/src is not empty and is not a FreeBSD git checkout` | You installed FreeBSD's "src" set (or other files are in it). Move the **contents** away (the directory itself may be a mount point): `mkdir -p /root/src.old && mv /usr/src/* /usr/src/.[!.]* /root/src.old/`, then run again. Or build elsewhere: `sh image/build-image.sh -s /home/src` |
-| step `git-clone` / `git-update` failed | Internet or DNS problem. Test with `ping -c3 git.freebsd.org`, then run again. If git.FreeBSD.org keeps breaking off (`early EOF`), use the GitHub mirror: `GIT_URL=https://github.com/freebsd/freebsd-src.git sh image/build-image.sh` |
+| step `git-clone` / `git-update` failed | Check internet connectivity and DNS access to `github.com`, then run again. The script downloads from `https://github.com/freebsd/freebsd-src.git` by default, including updates to existing checkouts. `GIT_URL` can override the source repository. |
 | step `buildworld` failed with `Killed` or `out of swap` | Not enough memory: run again with `-j 2`. |
 | step `buildworld` failed otherwise | Often a broken source update. Run with `-f` (full rebuild). If it still fails, wait a day: `stable/15` is fixed quickly. Or use the previous source: `cd /usr/src && git log --oneline -3`. |
 | step `pkg-update` / `pkg-fetch` failed | Internet problem, or a package is temporarily missing for this architecture. Run again later. |
@@ -525,7 +525,7 @@ The script stops with `ERROR:` after showing the command output live. The full l
 [`image/build-image.sh`](../image/build-image.sh) only uses FreeBSD's own tools:
 
 1. **Checks**: FreeBSD ≥ 15, root, git, ≥ 30 GB free, RAM.
-2. **Source**: `git init` + `git fetch --depth 1 https://git.FreeBSD.org/src.git stable/15` +
+2. **Source**: `git init` + `git fetch --depth 1 https://github.com/freebsd/freebsd-src.git stable/15` +
    `git checkout` in `/usr/src` (the same as a shallow `git clone`, but it also works when
    `/usr/src` is an empty mount point such as the ZFS dataset `zroot/usr/src`); only `fetch` +
    `checkout` when it is already a checkout.
