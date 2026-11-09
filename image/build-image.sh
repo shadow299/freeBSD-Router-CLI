@@ -229,12 +229,24 @@ DISC=$RELOBJ/disc1
 step "Downloading the router packages for FreeBSD:$MAJOR:$TARGET_ARCH"
 PKGW=$OUT/pkg-$ARCH
 rm -rf "$PKGW"
-mkdir -p "$PKGW/db" "$PKGW/cache" "$PKGW/repo"
+mkdir -p "$PKGW/db" "$PKGW/cache" "$PKGW/repo" "$PKGW/repos"
+# Only userspace packages are needed. Do not inherit host repositories such as
+# version-specific kmods repositories, which may not exist for stable snapshots.
+cat > "$PKGW/repos/RouterBuild.conf" <<'EOF'
+RouterBuild: {
+    url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest",
+    mirror_type: "srv",
+    signature_type: "fingerprints",
+    fingerprints: "/usr/share/keys/pkg",
+    enabled: yes
+}
+EOF
 # A private package database + cache for the TARGET's ABI; the build
 # machine's own packages are not touched.
 tpkg() {
     pkg -o ABI="FreeBSD:$MAJOR:$TARGET_ARCH" -o OSVERSION="$OSVERSION" -o IGNORE_OSVERSION=yes \
-        -o PKG_DBDIR="$PKGW/db" -o PKG_CACHEDIR="$PKGW/cache" -o ASSUME_ALWAYS_YES=yes "$@"
+        -o REPOS_DIR="$PKGW/repos" -o PKG_DBDIR="$PKGW/db" \
+        -o PKG_CACHEDIR="$PKGW/cache" -o ASSUME_ALWAYS_YES=yes "$@"
 }
 run pkg-update tpkg update -f
 PYVER=$(tpkg rquery '%dn' python3 | sed -n 's/^python\(3[0-9]*\)$/\1/p' | head -1)

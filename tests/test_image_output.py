@@ -77,3 +77,34 @@ run sample sh -c 'echo READY; read answer; echo FINISHED'
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
+
+
+class TestImagePackageRepository(unittest.TestCase):
+    def test_target_commands_use_private_signed_ports_repository(self):
+        setup = SOURCE[
+            SOURCE.index('PKGW=$OUT/pkg-$ARCH'):
+            SOURCE.index('run pkg-update tpkg update -f')
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["sh", "-eu", "-c", """
+pkg() { printf '%s\\n' "$@"; }
+""" + setup + """
+tpkg update -f
+tpkg rquery '%dn' python3
+tpkg search -q frr
+tpkg fetch -d python3
+"""],
+                env=dict(os.environ, OUT=directory, ARCH="arm64", MAJOR="15",
+                         TARGET_ARCH="aarch64", OSVERSION="1500000"),
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            private = Path(directory, "pkg-arm64", "repos")
+            self.assertEqual(result.stdout.count(f"REPOS_DIR={private}\n"), 4)
+            self.assertEqual(result.stdout.count("ABI=FreeBSD:15:aarch64\n"), 4)
+            conf = (private / "RouterBuild.conf").read_text()
+            self.assertIn('url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest"', conf)
+            self.assertIn('signature_type: "fingerprints"', conf)
+            self.assertIn('fingerprints: "/usr/share/keys/pkg"', conf)
+            self.assertNotIn("kmods", conf)
