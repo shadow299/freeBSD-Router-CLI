@@ -13,7 +13,9 @@
 #   -b BRANCH   FreeBSD git branch (default: stable/15)
 #   -s DIR      FreeBSD source directory (default: /usr/src)
 #   -o DIR      output directory (default: /usr/obj/router-image)
-#   (set MAKEOBJDIRPREFIX=/bigdisk/obj to build somewhere else than /usr/obj)
+#   (set MAKEOBJDIRPREFIX=/bigdisk/obj to build somewhere else than /usr/obj;
+#    set GIT_URL=https://github.com/freebsd/freebsd-src.git to download the
+#    source from the GitHub mirror if git.FreeBSD.org is slow or unreachable)
 #   -j N        parallel build jobs (default: number of CPUs)
 #   -k NAME     kernel configuration (default: GENERIC)
 #   -n          no FRR (no OSPF/RIP/BGP; saves ~30 MB)
@@ -46,7 +48,7 @@ KERNCONF=GENERIC
 NO_FRR=""
 NO_UPDATE=""
 FORCE=""
-GIT_URL=https://git.FreeBSD.org/src.git
+GIT_URL=${GIT_URL:-https://git.FreeBSD.org/src.git}
 
 usage() { sed -n '2,/^set -eu/p' "$0" | sed -e '/^set -eu/d' -e 's/^#//' -e 's/^ //'; exit "${1:-0}"; }
 while getopts a:b:s:o:j:k:nufh opt; do
@@ -117,13 +119,27 @@ if [ -d "$SRC/.git" ]; then
         info "updating the existing checkout"
         run git-update sh -c "git -C '$SRC' fetch --depth 1 origin '$BRANCH' && git -C '$SRC' checkout -q -B '$BRANCH' FETCH_HEAD"
     fi
-elif [ -e "$SRC/Makefile" ]; then
-    die "$SRC contains source code that is not a git checkout. Move it away first:  mv $SRC $SRC.old"
 else
-    info "downloading (about 1 GB, 5-20 minutes)"
+    # /usr/src is often a mount point that cannot be removed ("Device busy"): the
+    # installer's ZFS layout makes it a dataset (zroot/usr/src). So download into
+    # the existing directory instead of letting git create it. Only filesystem
+    # housekeeping entries (UFS .snap, lost+found) may be in it.
     mkdir -p "$SRC"
-    rmdir "$SRC" 2>/dev/null || die "$SRC exists and is not empty"
-    run git-clone git clone --depth 1 --branch "$BRANCH" "$GIT_URL" "$SRC"
+    extra=""
+    for f in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
+        [ -e "$f" ] || continue
+        case "${f##*/}" in lost+found|.snap) continue ;; esac
+        extra="$extra${f##*/} "
+    done
+    if [ -n "$extra" ]; then
+        die "$SRC is not empty and is not a FreeBSD git checkout (it contains: $extra...).
+       Empty it first (it may be a mount point, so remove its contents, not the directory):
+         mkdir -p /root/src.old && mv $SRC/* $SRC/.[!.]* /root/src.old/
+       or build from another directory:  sh image/build-image.sh -s /home/src"
+    fi
+    info "downloading from $GIT_URL (about 1 GB, 5-20 minutes)"
+    run git-clone sh -c "git -C '$SRC' init -q && git -C '$SRC' remote add origin '$GIT_URL' && \
+        git -C '$SRC' fetch --depth 1 origin '$BRANCH' && git -C '$SRC' checkout -q -B '$BRANCH' FETCH_HEAD"
 fi
 [ -f "$SRC/sys/conf/newvers.sh" ] || die "$SRC does not look like FreeBSD source code"
 REVISION=$(sed -n 's/^REVISION="\(.*\)"/\1/p' "$SRC/sys/conf/newvers.sh")
